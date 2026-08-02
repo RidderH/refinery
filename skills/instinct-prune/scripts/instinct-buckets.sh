@@ -216,20 +216,36 @@ frontmatter() { awk 'NR==1 && $0=="---"{fm=1;next} fm && $0=="---"{exit} fm' "$1
 
 has_cites() { frontmatter "$1" | grep -q '^cites:'; }
 
-# Prints one declared entry per line; prints nothing for `cites: []`. Block
-# sequence form only (`cites:` then `  - "path"`), matching the design's
-# examples — an inline non-empty list is not the contract.
+# Prints one declared entry per line; prints nothing for `cites: []`. The
+# documented form is the block sequence (`cites:` then `  - "path"`), but an
+# inline non-empty list is PARSED rather than ignored: letting it fall through
+# to zero entries would report CITES_NONE — granting the permanent
+# path-independent exemption to a file that tried to declare paths. A
+# malformed-but-parseable declaration must not fail into the exemption class.
+# Quote stripping is anchored to the ends only: a path legitimately containing
+# an apostrophe must survive (the first version gsub'd every single quote).
 cites_decl() {
   frontmatter "$1" | awk '
+    function clean(s) {
+      sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s)
+      sub(/^"/, "", s); sub(/"$/, "", s)
+      sub(/^\047/, "", s); sub(/\047$/, "", s)
+      return s
+    }
     /^cites:[[:space:]]*\[[[:space:]]*\][[:space:]]*$/ { exit }
+    /^cites:[[:space:]]*\[/ {
+      line = $0
+      sub(/^cites:[[:space:]]*\[/, "", line)
+      sub(/\][[:space:]]*$/, "", line)
+      n = split(line, parts, ",")
+      for (i = 1; i <= n; i++) { p = clean(parts[i]); if (p != "") print p }
+      exit
+    }
     /^cites:/ { inc=1; next }
     inc && /^[[:space:]]+-[[:space:]]/ {
       line = $0
       sub(/^[[:space:]]+-[[:space:]]+/, "", line)
-      sub(/[[:space:]]+$/, "", line)
-      gsub(/^"|"$/, "", line)
-      gsub(/\047/, "", line)
-      print line
+      print clean(line)
       next
     }
     inc && /^[^[:space:]]/ { inc = 0 }
@@ -241,11 +257,17 @@ repo_true() {
 }
 
 # DECLARED branch. A dead entry here is a strong signal, not an artifact: a human
-# named it load-bearing and it is gone. The ~8 cap matches the inferred branch's
-# `head -8` — more than that means the lesson cites a subsystem, not files.
+# named it load-bearing and it is gone. Every declared entry is checked — the ~8
+# cap in the format contract is an AUTHORING rule; truncating here would leave a
+# dead load-bearing path at position 9 silently unchecked, inverting
+# fail-toward-not-deleting. (The inferred branch keeps its head -8: regex
+# extraction over prose can spray matches; a curated list cannot.)
+# No bare-cwd resolution either: entries are project-qualified by contract, and
+# resolving against the corpus dir (the cwd) would let an unqualified entry
+# spuriously resolve. The inferred branch keeps it for body-derived paths.
 repo_true_declared() {
   local paths dead=0 total=0 p r found
-  paths=$(cites_decl "$1" | head -8)
+  paths=$(cites_decl "$1")
   [ -z "$paths" ] && { echo "CITES_NONE"; return; }
   while read -r p; do
     [ -z "$p" ] && continue
@@ -254,7 +276,6 @@ repo_true_declared() {
     for r in $ROOTS $ROOT_PARENTS; do
       if [ -e "$r/$p" ]; then found=1; break; fi
     done
-    [ -e "$p" ] && found=1
     if [ "$found" -eq 0 ]; then dead=$((dead+1)); fi
   done <<< "$paths"
   if [ "$dead" -eq 0 ]; then echo "CITES_OK"; return; fi
@@ -303,9 +324,9 @@ repo_true_inferred() {
 if [ "$TSV" = "--selftest" ]; then
   ST=$(mktemp -d "${TMPDIR:-/tmp}/instinct-buckets-st.XXXXXX") || { echo "FATAL: mktemp -d failed" >&2; exit 3; }
   trap 'rm -rf "$ST"' EXIT
-  # Two path families, on purpose. LIVE/DEAD start with `.claude`, so the
-  # INFERRED regex sees them too. LIVE_Q/DEAD_Q start with a segment outside
-  # PREFIX_ALT, so only the declared branch can see them.
+  # Two path families, on purpose. DEAD starts with `.claude`, so the INFERRED
+  # regex sees it too. LIVE_Q/DEAD_Q start with a segment outside PREFIX_ALT,
+  # so only the declared branch can see them.
   #
   # That distinction is load-bearing, and it was found by probe: with declared
   # entries drawn from the `.claude` family, neutering the whole declared branch
@@ -313,7 +334,6 @@ if [ "$TSV" = "--selftest" ]; then
   # re-deriving the same labels from the frontmatter text, so those checks
   # asserted nothing about the code they were written for. Keep the declared
   # fixtures on the _Q family or the neuter probe stops discriminating.
-  LIVE=".claude/skills/instinct-prune/scripts/instinct-buckets.sh"
   DEAD=".claude/skills/instinct-prune/scripts/no-such-file-ever.sh"
   # LIVE_Q must resolve on ANY install, not just the author's. It named a
   # specific instinct file until the clean-room test caught it: 3 of these 8
@@ -397,8 +417,37 @@ cites: []
 See $DEAD here."
   expect cites-body-only ALL_DEAD
 
-  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (8 checks)"; exit 0
-  else echo "selftest: FAIL ($ST_FAIL of 8)"; exit 1; fi
+  # Inline non-empty list: the undocumented form must be PARSED, not silently
+  # classified CITES_NONE — falling through would grant the permanent
+  # path-independent exemption to a file that tried to declare paths.
+  fixture cites-inline "---
+id: x
+cites: [\"$LIVE_Q\", \"$DEAD_Q\"]
+---
+body"
+  expect cites-inline SOME_DEAD
+
+  # Entry 9 must still be checked: the ~8 cap is an authoring rule, and a
+  # truncating scanner would leave a dead load-bearing path at position 9
+  # silently unchecked. Only the 9th entry here is dead.
+  fixture cites-ninth-dead "---
+id: x
+cites:
+  - \"$LIVE_Q\"
+  - \"$LIVE_Q\"
+  - \"$LIVE_Q\"
+  - \"$LIVE_Q\"
+  - \"$LIVE_Q\"
+  - \"$LIVE_Q\"
+  - \"$LIVE_Q\"
+  - \"$LIVE_Q\"
+  - \"$DEAD_Q\"
+---
+body"
+  expect cites-ninth-dead SOME_DEAD
+
+  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (10 checks)"; exit 0
+  else echo "selftest: FAIL ($ST_FAIL of 10)"; exit 1; fi
 fi
 
 # ---------------------------------------------------------------- report

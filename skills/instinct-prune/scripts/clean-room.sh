@@ -80,8 +80,12 @@ fi
 
 # ---------------------------------------------------------------- empty corpus
 echo; echo "BEHAVIOUR ON AN EMPTY CORPUS (must fail closed, not report clean)"
+# Existence first, and the EXACT exit code (4 = walked 0 files). A generic
+# "nonzero" would also pass when the script is simply missing from the package
+# (bash exits 127) — the very fail-open this section exists to catch.
+[ -f "$bs" ]; chk "buckets script is present in the install" $((1 - $?))
 out=$(bash "$bs" 2>&1); rc=$?
-[ "$rc" -ne 0 ]; chk "empty corpus is a FAILED run, not a clean one (rc=$rc)" $((1 - $?))
+[ "$rc" -eq 4 ]; chk "empty corpus is a FAILED run with the fail-closed exit (rc=$rc, want 4)" $((1 - $?))
 case "$out" in *"walked 0 files"*) ok=1;; *) ok=0;; esac
 chk "and it says why" "$ok"
 

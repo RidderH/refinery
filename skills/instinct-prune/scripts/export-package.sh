@@ -7,7 +7,8 @@
 #
 # EXPORTED: every skills/instinct-* dir, hooks/surface-instincts.sh,
 #           rules/instincts.md, plus the package's own README/manifest which
-#           live in this repo under skills/instinct-prune/package/.
+#           live in this repo under docs/refinery/ (outside every exported
+#           path — nested inside a skill they shipped twice).
 # NEVER EXPORTED: homunculus/ (the personal corpus — 359 lessons), settings.json,
 #           any other rules/, local-projects.conf (real client names live there).
 #
@@ -90,12 +91,16 @@ build_stage() {  # $1 = stage dir
 }
 
 gate_stage() {  # $1 = stage dir; the release gate, run on the COPY
-  local stage="$1" args=() d
-  for d in "$stage"/skills/instinct-*/; do [ -d "$d" ] && args+=("${d%/}"); done
-  [ -e "$stage/hooks/surface-instincts.sh" ] && args+=("$stage/hooks/surface-instincts.sh")
-  [ -e "$stage/rules/instincts.md" ] && args+=("$stage/rules/instincts.md")
-  [ "${#args[@]}" -gt 0 ] || die "nothing staged to scan"
-  bash "$HERE/pre-publish.sh" "${args[@]}"
+  local stage="$1"
+  # Sanity first: an empty stage passing a scan proves nothing.
+  [ -n "$(find "$stage/skills" -maxdepth 1 -name 'instinct-*' -type d 2>/dev/null)" ] \
+    || die "nothing staged to scan"
+  # Scan the WHOLE stage, never a hand-built subset. The first version
+  # enumerated skills/hooks/rules and missed the package metadata copied to the
+  # stage ROOT — README and plugin.json would have shipped unscanned while the
+  # header claimed everything was gated. Same bug shape as pre-publish's own
+  # DEFAULT_SURFACE drift: a list under-enumerates; a directory cannot.
+  bash "$HERE/pre-publish.sh" "$stage"
 }
 
 publish() {  # $1 = dest
@@ -116,14 +121,26 @@ publish() {  # $1 = dest
   echo "gate: clean"
 
   mkdir -p "$dest" || die "cannot create $dest"
+  # AUTHORITATIVE inside-source guard, physical paths. The case-match at the
+  # top compares raw strings and is bypassed by a relative dest or a symlink
+  # resolving into $SRC — and what it protects is an rm -rf that would delete
+  # the LIVE skills/hooks/rules out of the config. Resolve both sides with
+  # pwd -P (bash 3.2 has no realpath guarantee) right before the destructive
+  # step. The early check stays: it fails fast before staging work.
+  local dest_phys src_phys
+  dest_phys=$(cd "$dest" 2>/dev/null && pwd -P) || die "cannot resolve $dest"
+  src_phys=$(cd "$SRC" && pwd -P) || die "cannot resolve $SRC"
+  case "$dest_phys" in
+    "$src_phys"|"$src_phys"/*) die "destination resolves inside the source config ($dest_phys) — refusing to rm -rf there";;
+  esac
   # Replace only the managed subtrees. A README, LICENSE, .git or anything else
   # the destination gained on its own is left alone.
   local sub
   for sub in skills hooks rules; do
-    [ -d "$stage/$sub" ] && rm -rf "${dest:?}/$sub"
+    [ -d "$stage/$sub" ] && rm -rf "${dest_phys:?}/$sub"
   done
-  cp -R "$stage/." "$dest/" || die "copy into $dest failed"
-  echo "exported -> $dest"
+  cp -R "$stage/." "$dest_phys/" || die "copy into $dest_phys failed"
+  echo "exported -> $dest_phys"
 }
 
 # ---------------------------------------------------------------- selftest
@@ -177,6 +194,18 @@ selftest() {
   # Refuse to write inside the source config.
   ( SRC="$tmp/src"; publish "$tmp/src/sub" ) >/dev/null 2>&1
   [ $? -eq 2 ]; chk "refuses a destination inside the source config" $((1 - $?))
+
+  # Symlink bypass: a dest that only RESOLVES inside the source must be refused
+  # too. The early check is a raw string compare and cannot see it, so this
+  # exercises the physical (pwd -P) guard that sits in front of the rm -rf.
+  # The gate must PASS for control to reach that guard, so hand pre-publish a
+  # satisfiable config with a name that matches nothing.
+  printf 'DENY_NAMES="Zz_Never_Present"\n' > "$tmp/ppconf"; chmod 600 "$tmp/ppconf"
+  ln -s "$tmp/src" "$tmp/link"
+  ( SRC="$tmp/src"; LOCAL_PROJECTS_CONF="$tmp/ppconf" SKIP_GITLEAKS=1 publish "$tmp/link/sub" ) >/dev/null 2>&1
+  [ $? -eq 2 ]; chk "refuses a dest that RESOLVES inside the source (symlink)" $((1 - $?))
+  [ -f "$tmp/src/skills/instinct-one/SKILL.md" ]
+  chk "and the live source tree survived the attempt" $((1 - $?))
 
   # Missing input fails closed rather than exporting a partial package.
   # Subshell: die() exits, so calling build_stage directly would end the
