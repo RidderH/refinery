@@ -1,0 +1,10 @@
+# Build artifacts — the publish gate refuses to ship these, so keep them
+# from ever being committed here either.
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
+
+# Machine-specific: real client and project names live only in this file.
+# Copy scripts/local-projects.conf.example and fill it in locally.
+homunculus/local-projects.conf
+local-projects.conf

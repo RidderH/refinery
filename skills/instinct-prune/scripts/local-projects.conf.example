@@ -1,0 +1,37 @@
+# local-projects.conf — machine-specific config for instinct-buckets.sh gate 2
+# and the pre-publish.sh privacy gate.
+#
+# Copy to ~/.claude/homunculus/local-projects.conf and edit. That path is
+# gitignored: this file is the ONLY copy that ships, and it must never contain
+# a real client or project name — the whole point is keeping those out of the
+# published tree (see docs/superpowers/plans/2026-08-01-ruling-ledger-design.md's
+# sibling scrub plan). Values here are placeholders.
+#
+# Sourced by bash. Keep it to KEY="value" lines — it runs with your shell's
+# privileges, which is fine for a file only you write, and is why the loader
+# refuses a world-writable file.
+
+# Parent dir(s) whose immediate children (and depth-2 real checkouts) are
+# project roots. Space-separated.
+PROJECT_PARENTS="$HOME/Code_projects"
+
+# Extra roots outside those parents (projects living at their own top level).
+# $HOME/.claude and $HOME are always included; list additions only.
+EXTRA_ROOTS="$HOME/Acme_App $HOME/Acme_App/acme-web-app"
+
+# Projects the instinct corpus cites that are NOT on this machine. Citations
+# to these report UNVERIFIABLE (cannot judge here) instead of ALL_DEAD
+# (evidence of staleness). With this unset, a lesson about another machine's
+# repo can be flagged as a stale-file candidate — gates are candidate flags,
+# not verdicts, but you will review noise you could have configured away.
+ABSENT_NAMES="Client_Portal legacy-checkout"
+
+# Extra first-segment prefixes for gate 2's cited-path extraction, beyond the
+# generic ones (src supabase docs .claude scripts skills). Add a project's
+# subdir name here if instincts cite paths starting with it.
+PATH_PREFIXES="acme-web-app"
+
+# Names that must never appear in the published package. pre-publish.sh greps
+# the shipping tree for each and fails on any hit. Typically the union of
+# every private client/project name above plus personal identifiers.
+DENY_NAMES="Client_Portal legacy-checkout Acme_App your-username your-domain.example"
