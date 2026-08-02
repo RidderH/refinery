@@ -87,9 +87,19 @@ Everything works without the file — path resolution falls back to generic disc
 ## Requirements
 
 - Claude Code
-- `bash`, `python3`, standard POSIX tools
-- Developed and tested on macOS (bash 3.2). Linux should work; Windows is not yet
-  characterized.
+- `bash` 3.2+, `python3`, standard POSIX tools; `gitleaks` only for the publish gate
+- Developed and tested on macOS (bash 3.2). Linux should work; Windows means WSL.
+  Full platform contract — what's assumed, and what happens when an assumption fails —
+  in [PORTABILITY.md](PORTABILITY.md).
+
+## Content safety
+
+The corpus is an injection surface: distill turns instinct prose into skills and rules,
+so a hostile instinct file is a real threat model. The short version: bodies are quoted
+data, imports are adversarial until a human reads them, every generated artifact passes
+per-artifact human review, and hooks are propose-only, permanently. The full contract is
+[CONTENT-SAFETY.md](CONTENT-SAFETY.md) and is restated inside the skills that read the
+corpus.
 
 ## Status
 
