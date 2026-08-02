@@ -315,7 +315,13 @@ if [ "$TSV" = "--selftest" ]; then
   # fixtures on the _Q family or the neuter probe stops discriminating.
   LIVE=".claude/skills/instinct-prune/scripts/instinct-buckets.sh"
   DEAD=".claude/skills/instinct-prune/scripts/no-such-file-ever.sh"
-  LIVE_Q="homunculus/instincts/personal/dead-code-signals-are-candidates-not-verdicts.md"
+  # LIVE_Q must resolve on ANY install, not just the author's. It named a
+  # specific instinct file until the clean-room test caught it: 3 of these 8
+  # checks failed on a virgin config, because that lesson only exists in one
+  # person's corpus. The corpus DIRECTORY is the safe choice — this script
+  # cd's into it at startup, so it is guaranteed to exist whenever the selftest
+  # can run at all.
+  LIVE_Q="homunculus/instincts/personal"
   DEAD_Q="homunculus/instincts/personal/no-such-instinct-ever.md"
   ST_FAIL=0
   fixture() { printf '%s\n' "$2" > "$ST/$1.md"; }
