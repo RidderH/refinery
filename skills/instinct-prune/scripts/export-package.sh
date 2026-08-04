@@ -30,7 +30,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Paths copied verbatim, relative to SRC. Discovered skills are added below.
 FIXED_PATHS=("hooks/surface-instincts.sh" "rules/instincts.md")
 REQUIRED_PACKAGE_FILES=(".claude-plugin/plugin.json" ".gitignore"
-                        "CONTENT-SAFETY.md" "PORTABILITY.md" "README.md"
+                        "CONTENT-SAFETY.md" "LICENSE" "PORTABILITY.md" "README.md"
                         "package-manifest.json" "skills.sh.json")
 
 die() { echo "FATAL: $*" >&2; exit 2; }
@@ -474,6 +474,7 @@ selftest() {
     echo '{"name":"fixture"}' > "$pkg/.claude-plugin/plugin.json"
     echo "fixture ignores" > "$pkg/.gitignore"
     echo "fixture content safety" > "$pkg/CONTENT-SAFETY.md"
+    printf '%s\n' 'MIT License' 'Copyright (c) 2026 Fixture' > "$pkg/LICENSE"
     echo "fixture portability" > "$pkg/PORTABILITY.md"
     echo '{"$schema":"https://skills.sh/schemas/skills.sh.schema.json"}' > "$pkg/skills.sh.json"
     echo '{"fixture":true}' > "$pkg/evals/privacy-gate-benchmark.json"
@@ -493,6 +494,7 @@ selftest() {
  {"source":".claude-plugin/plugin.json","destination":".claude-plugin/plugin.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":".gitignore","destination":".gitignore","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"CONTENT-SAFETY.md","destination":"CONTENT-SAFETY.md","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
+ {"source":"LICENSE","destination":"LICENSE","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"PORTABILITY.md","destination":"PORTABILITY.md","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"skills.sh.json","destination":"skills.sh.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"README.md","destination":"README.md","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},

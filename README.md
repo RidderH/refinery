@@ -180,6 +180,10 @@ per-artifact human review, and hooks are propose-only, permanently. The full con
 [CONTENT-SAFETY.md](CONTENT-SAFETY.md) and is restated inside the skills that read the
 corpus.
 
+## License
+
+Refinery is available under the [MIT License](LICENSE).
+
 ## Status
 
 v1. Export is one-way — this repo is generated from a working config, so please open an

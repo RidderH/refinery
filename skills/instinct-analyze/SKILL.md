@@ -1,6 +1,7 @@
 ---
 name: instinct-analyze
 description: Review the current conversation for durable lessons, verify each candidate, and present ranked recommendations before writing anything.
+license: MIT
 disable-model-invocation: true
 ---
 

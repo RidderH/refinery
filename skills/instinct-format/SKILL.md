@@ -1,6 +1,7 @@
 ---
 name: instinct-format
 description: Define and validate the instinct file contract when creating, converting, reviewing, or supplying the contract to another skill.
+license: MIT
 ---
 
 # Instinct file format

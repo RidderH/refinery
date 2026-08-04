@@ -1,6 +1,7 @@
 ---
 name: instinct-distill
 description: Evaluate recurring instincts and promote qualifying lessons into the smallest human-approved skill, rule, command, agent, or hook proposal.
+license: MIT
 disable-model-invocation: true
 ---
 
