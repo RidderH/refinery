@@ -36,7 +36,7 @@ distill. They can archive files or propose durable guidance, so a human starts e
 There is no background capture: lessons are proposed only through human-started workflows, so
 verification gates cannot be bypassed.
 
-## Install for Codex and compatible agents
+## Install for Claude & Codex and other compatible agents
 
 Clone the repository once, then link the canonical skill directories into the shared
 user-level Agent Skills directory:
