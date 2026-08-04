@@ -1,6 +1,7 @@
 ---
 name: instinct-prune
 description: Identify stale instincts, obtain a human ruling, and archive approved candidates through a recoverable transaction.
+license: MIT
 disable-model-invocation: true
 ---
 

@@ -56,6 +56,15 @@
       "install": false
     },
     {
+      "source": "LICENSE",
+      "destination": "LICENSE",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
       "source": ".gitignore",
       "destination": ".gitignore",
       "type": "metadata",

@@ -46,6 +46,8 @@ for s in analyze distill format prune; do
 done
 [ -f "$HOME/.claude/hooks/surface-instincts.sh" ]; chk "hook installed" $((1 - $?))
 [ -f "$HOME/.claude/rules/instincts.md" ]; chk "rule installed" $((1 - $?))
+[ -f "$PKG/LICENSE" ]; chk "root MIT license shipped with the package" $((1 - $?))
+[ ! -e "$HOME/.claude/LICENSE" ]; chk "package metadata license is not copied into agent config" $((1 - $?))
 
 # The package must not have dragged the author's world along.
 [ -z "$(find "$HOME/.claude" -name 'local-projects.conf' 2>/dev/null)" ]

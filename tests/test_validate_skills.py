@@ -16,6 +16,20 @@ SOURCE_ROOT = (
     else PACKAGE_ROOT.parent.parent
 )
 
+MIT_FIXTURE = """MIT License
+
+Copyright (c) 2026 Fixture
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction.
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+"""
+
 
 class ValidateSkillsCliTests(unittest.TestCase):
     def run_validator(self, package_root):
@@ -50,6 +64,71 @@ class ValidateSkillsCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("VALIDATION PASSED: 4 Refinery skills", result.stdout)
+
+    def test_shipped_refinery_license_is_declared_consistently(self):
+        license_path = (
+            SOURCE_ROOT / "LICENSE"
+            if (SOURCE_ROOT / "LICENSE").is_file()
+            else SOURCE_ROOT / "docs/refinery/LICENSE"
+        )
+        self.assertIn("MIT License", license_path.read_text())
+        for skill in sorted((SOURCE_ROOT / "skills").glob("instinct-*")):
+            self.assertIn("license: MIT", (skill / "SKILL.md").read_text(), skill.name)
+
+    def test_skill_license_requires_a_root_license(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            skill = root / "skills/instinct-licensed"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\n"
+                "name: instinct-licensed\n"
+                "description: A licensed skill without its package license.\n"
+                "license: MIT\n"
+                "---\n\n# Licensed\n"
+            )
+
+            result = self.run_validator(root)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("package root LICENSE is missing", result.stderr)
+
+    def test_root_license_requires_mit_on_every_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "LICENSE").write_text(MIT_FIXTURE)
+            skill = root / "skills/instinct-unlicensed"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\n"
+                "name: instinct-unlicensed\n"
+                "description: A skill missing its package license declaration.\n"
+                "---\n\n# Unlicensed\n"
+            )
+
+            result = self.run_validator(root)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("license must be MIT", result.stderr)
+
+    def test_root_license_must_contain_canonical_mit_terms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "LICENSE").write_text("MIT-ish\n")
+            skill = root / "skills/instinct-licensed"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\n"
+                "name: instinct-licensed\n"
+                "description: A correctly declared control skill.\n"
+                "license: MIT\n"
+                "---\n\n# Licensed\n"
+            )
+
+            result = self.run_validator(root)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("invalid MIT license", result.stderr)
 
     def test_shipped_manual_skills_disable_openai_implicit_invocation(self):
         for name in ("instinct-analyze", "instinct-prune", "instinct-distill"):

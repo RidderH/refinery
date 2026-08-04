@@ -27,6 +27,13 @@ ALLOWED_KEYS = {
     "hooks",
 }
 
+MIT_REQUIRED_FRAGMENTS = (
+    "MIT License",
+    "Permission is hereby granted, free of charge, to any person obtaining a copy",
+    "The above copyright notice and this permission notice shall be included",
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND',
+)
+
 
 if yaml is not None:
     class UniqueKeySafeLoader(yaml.SafeLoader):
@@ -117,6 +124,22 @@ def _validate_metadata(frontmatter, directory_name):
             raise ValueError(f"{key} must be a boolean")
 
 
+def _find_license(root):
+    for candidate in (root / "LICENSE", root / "docs/refinery/LICENSE"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _validate_mit_license(path):
+    text = path.read_text()
+    for fragment in MIT_REQUIRED_FRAGMENTS:
+        if fragment not in text:
+            raise ValueError(f"missing canonical MIT text: {fragment}")
+    if re.search(r"^Copyright \(c\) \d{4}(?:-\d{4})? \S", text, re.MULTILINE) is None:
+        raise ValueError("missing copyright year and holder")
+
+
 def _validate_openai_metadata(data, skill_name, manual_only):
     if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
         raise ValueError("metadata must be a mapping with string keys")
@@ -179,8 +202,16 @@ def main(args):
         print(f"no Refinery skills found under {root}", file=sys.stderr)
         return 2
 
+    license_path = _find_license(root)
+    license_enabled = license_path is not None
     openai_enabled = any((path / "agents/openai.yaml").is_file() for path in skill_dirs)
     failed = False
+    if license_path is not None:
+        try:
+            _validate_mit_license(license_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"{license_path.relative_to(root)}: invalid MIT license: {exc}", file=sys.stderr)
+            failed = True
     for skill_dir in skill_dirs:
         path = skill_dir / "SKILL.md"
         relative = path.relative_to(root)
@@ -193,6 +224,10 @@ def main(args):
             if not isinstance(frontmatter, dict):
                 raise ValueError("frontmatter must be a mapping")
             _validate_metadata(frontmatter, path.parent.name)
+            if license_enabled and frontmatter.get("license") != "MIT":
+                raise ValueError("license must be MIT when the package has a root LICENSE")
+            if not license_enabled and "license" in frontmatter:
+                raise ValueError("skill declares a license but the package root LICENSE is missing")
         except yaml.YAMLError as exc:
             print(f"{relative}: invalid YAML: {exc}", file=sys.stderr)
             failed = True
