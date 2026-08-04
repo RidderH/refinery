@@ -38,27 +38,52 @@ verification gates cannot be bypassed.
 
 ## Install for Claude Code, Codex, and compatible agents
 
-Clone the repository once, then link the canonical skill directories into the shared
-user-level Agent Skills directory:
+Clone the repository once, then choose where Refinery and future distilled skills should live.
+The setup command writes one small local configuration file and links the four Refinery workflow
+skills into the selected agent discovery directories.
+
+For both Codex and Claude Code, use the shared profile:
 
 ```bash
 git clone <this-repo> ~/refinery
-python3 ~/refinery/skills/instinct-prune/scripts/link_agent_skills.py \
-  install ~/refinery
+python3 ~/refinery/skills/instinct-distill/scripts/skill_roots.py \
+  setup shared ~/refinery
 mkdir -p ~/.claude/homunculus/instincts/personal
 ```
 
-The default destination is `~/.agents/skills`. Pass another directory as the final argument
-for an agent or project that uses a different discovery root:
+The canonical skill entries live in `~/.agents/skills`. Codex discovers that shared root
+directly; setup creates managed per-skill links under `~/.claude/skills` for Claude Code. The
+four bundled workflow skills remain links to the checkout, so `git pull` updates them in place;
+future distilled skills are stored as real directories in the canonical root.
+
+For only one agent:
 
 ```bash
-python3 ~/refinery/skills/instinct-prune/scripts/link_agent_skills.py \
-  install ~/refinery /path/to/project/.agents/skills
+# Codex only. Respects CODEX_HOME and otherwise uses ~/.codex/skills.
+python3 ~/refinery/skills/instinct-distill/scripts/skill_roots.py \
+  setup codex ~/refinery
+
+# Claude Code only.
+python3 ~/refinery/skills/instinct-distill/scripts/skill_roots.py \
+  setup claude ~/refinery
 ```
 
-The linker performs a complete conflict check before creating anything. It never replaces a
-real directory or a symlink owned by another checkout. Because the links point at the clone,
-`git pull` updates the installed skills without a reinstall.
+Codex still supports `$CODEX_HOME/skills`, but its current loader marks that user-skill location
+deprecated; choose `shared` unless keeping everything under Codex is an explicit goal.
+
+For a custom canonical root and zero or more additional agent discovery roots:
+
+```bash
+python3 ~/refinery/skills/instinct-distill/scripts/skill_roots.py \
+  setup-custom ~/refinery /path/to/canonical/skills /path/to/agent-a/skills
+```
+
+Configuration is stored at `${XDG_CONFIG_HOME:-~/.config}/refinery/skill-roots.json`.
+`REFINERY_SKILL_CONFIG`, `REFINERY_SKILLS_ROOT`, and the path-separated
+`REFINERY_AGENT_SKILL_ROOTS` override it for automation. The setup and link commands perform a
+complete conflict check before creating anything: they never replace a real directory or a link
+owned by another checkout. Because the core-skill links point at the clone, `git pull` updates
+those installed skills without reinstalling.
 
 ### Optional skills.sh install
 

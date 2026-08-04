@@ -30,6 +30,13 @@ import re
 import sys
 import tempfile
 
+try:
+    from skill_roots import RootError as SkillRootError
+    from skill_roots import load_config as load_skill_root_config
+except ImportError:  # Imported by a test harness that did not put this script dir on sys.path.
+    SkillRootError = ValueError
+    load_skill_root_config = None
+
 # A source id becomes a path via `claims / sid`. pathlib's `/` DISCARDS the left
 # operand when the right is absolute — `claims / "/tmp/victim"` is `/tmp/victim`,
 # not an error — and ".." climbs out of the store just as normal filesystem
@@ -69,6 +76,15 @@ def check_cluster_id(cluster_id):
 def _within(path, root):
     try:
         pathlib.Path(path).resolve().relative_to(pathlib.Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _lexically_within(path, root):
+    """Containment for the link pathname itself, without following the link."""
+    try:
+        pathlib.Path(os.path.abspath(path)).relative_to(pathlib.Path(os.path.abspath(root)))
         return True
     except (ValueError, OSError):
         return False
@@ -137,8 +153,41 @@ def validate_transaction_data(data, cluster_id, store, sequence=None):
             raise InvalidTransactionRecord(
                 f"{cluster_id}: citation path escapes corpus: {triple[0]}")
 
-    for key, owned_root in (("artifact", store.root),
-                            ("archive_dir", store.root.parent),
+    artifact = data.get("artifact")
+    if artifact is not None and (
+            not isinstance(artifact, str)
+            or not any(_within(artifact, root) for root in store.artifact_roots)):
+        raise InvalidTransactionRecord(
+            f"{cluster_id}: artifact escapes configured artifact roots: {artifact!r}")
+
+    links = data.get("discovery_links", [])
+    if not isinstance(links, list):
+        raise InvalidTransactionRecord(f"{cluster_id}: discovery_links must be a list")
+    seen_links = set()
+    for record in links:
+        if (not isinstance(record, list) or len(record) != 3
+                or not isinstance(record[0], str) or not isinstance(record[1], str)
+                or not isinstance(record[2], bool)):
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: each discovery link must be [link, target, existed_before]")
+        link, target, _ = record
+        if link in seen_links:
+            raise InvalidTransactionRecord(f"{cluster_id}: duplicate discovery link: {link}")
+        seen_links.add(link)
+        if not any(_lexically_within(link, root) for root in store.agent_skill_roots):
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: discovery link escapes configured agent roots: {link}")
+        if not _within(target, store.canonical_skill_root):
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: discovery link target escapes canonical root: {target}")
+        if pathlib.Path(link).name != pathlib.Path(target).name:
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: discovery link and target names differ: {link} / {target}")
+        if artifact is not None and not _within(artifact, target):
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: artifact is outside its discovery-link target: {artifact}")
+
+    for key, owned_root in (("archive_dir", store.root.parent),
                             ("manifest_path", store.root.parent)):
         value = data.get(key)
         if value is not None and (not isinstance(value, str) or not _within(value, owned_root)):
@@ -267,12 +316,30 @@ def content_hash(p):
 class Store:
     """Layout under <root>/.distill/ — ledger/, claims/, watermark.json"""
 
-    def __init__(self, root):
+    def __init__(self, root, artifact_roots=None, skill_config=None):
         self.root = pathlib.Path(root)
         self.base = self.root / ".distill"
         self.ledger = self.base / "ledger"
         self.claims = self.base / "claims"
         self.watermark = self.base / "watermark.json"
+        if skill_config is None:
+            try:
+                skill_config = (load_skill_root_config()
+                                if load_skill_root_config is not None else None)
+            except SkillRootError as exc:
+                raise InvalidTransactionRecord(
+                    f"cannot resolve configured skill roots: {exc}") from exc
+        if skill_config is None:
+            canonical = pathlib.Path.home() / ".agents/skills"
+            agent_roots = []
+        else:
+            canonical = pathlib.Path(skill_config["canonical_skills_root"])
+            agent_roots = [pathlib.Path(path) for path in skill_config["agent_skill_roots"]]
+        self.canonical_skill_root = canonical
+        self.agent_skill_roots = tuple(agent_roots)
+        roots = [self.root, canonical]
+        roots.extend(pathlib.Path(path) for path in (artifact_roots or []))
+        self.artifact_roots = tuple(roots)
 
     def read_watermark(self):
         if not self.watermark.exists():
@@ -344,6 +411,7 @@ class Transaction:
         self.d = data if data is not None else {
             "cluster_id": cluster_id, "state": "DISCOVERED", "sources": [],
             "history": [], "artifact": None, "artifact_hash_before": None,
+            "discovery_links": [],
             "citations": [], "archive_dir": None, "manifest_rows": [],
             "archive_hashes": {},
             "watermark_before": None, "reason": None,
@@ -408,9 +476,28 @@ class Transaction:
             _atomic_write(self.store.claims / sid, self.cluster_id)
         return self
 
-    def artifact_written(self, path, hash_before):
+    def artifact_written(self, path, hash_before, discovery_links=None):
+        if not self._legal(self.d["state"], "ARTIFACT_WRITTEN"):
+            raise IllegalTransition(
+                f"{self.cluster_id}: {self.d['state']} → ARTIFACT_WRITTEN is not a legal "
+                f"transition for {type(self).__name__}")
+        links = [list(record) for record in (discovery_links or [])]
+        candidate = dict(self.d)
+        candidate.update({
+            "state": "ARTIFACT_WRITTEN",
+            "history": self.d["history"] + ["ARTIFACT_WRITTEN"],
+            "artifact": str(path),
+            "artifact_hash_before": hash_before,
+            "discovery_links": links,
+        })
+        # External skill roots widen the old corpus-only artifact boundary. Validate
+        # the complete effect plan BEFORE persisting it, otherwise a typo or a
+        # hand-built link outside the configured roots creates an unrecoverable open
+        # transaction that only fails when reloaded.
+        validate_transaction_data(candidate, self.cluster_id, self.store, self.SEQUENCE)
         self._record("ARTIFACT_WRITTEN", artifact=str(path),
-                     artifact_hash_before=hash_before)
+                     artifact_hash_before=hash_before,
+                     discovery_links=links)
         return self
 
     def citations_repointed(self, triples):
@@ -459,7 +546,32 @@ class Transaction:
             raise RuntimeError(f"{self.cluster_id}: COMMITTING is forward-only — "
                                "finish with commit(), do not roll back")
         self._record("ROLLING_BACK", reason=reason)
-        undone = {"artifact": False, "citations": 0, "archive": 0}
+        undone = {"artifact": False, "discovery_links": 0,
+                  "citations": 0, "archive": 0}
+
+        # Links are separate effects even though their intent is recorded with the
+        # artifact write. Preflight every link first so rollback cannot remove one
+        # owned link and then discover a foreign path halfway through the set.
+        removable_links = []
+        for link_text, target_text, existed_before in reversed(
+                self.d.get("discovery_links") or []):
+            if existed_before:
+                continue
+            link = pathlib.Path(link_text)
+            if link.is_symlink():
+                raw = pathlib.Path(os.readlink(link))
+                if not raw.is_absolute():
+                    raw = link.parent / raw
+                if pathlib.Path(os.path.abspath(raw)) != pathlib.Path(target_text):
+                    raise RuntimeError(
+                        f"{self.cluster_id}: discovery link changed ownership: {link}")
+                removable_links.append(link)
+            elif link.exists():
+                raise RuntimeError(
+                    f"{self.cluster_id}: discovery link became a foreign path: {link}")
+        for link in removable_links:
+            link.unlink()
+            undone["discovery_links"] += 1
 
         art = self.d.get("artifact")
         if art:
@@ -942,6 +1054,67 @@ def selftest():
         check("RED probe: neutering check_source_id lets the escape happen "
               "(proves the guard, when live, is what stops it)",
               neutered_wrote_outside)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _corpus(tmp)
+        canonical = pathlib.Path(tmp) / "shared-skills"
+        agent_root = pathlib.Path(tmp) / "claude-skills"
+        skill = canonical / "topic"
+        skill.mkdir(parents=True)
+        agent_root.mkdir()
+        config = {
+            "schema_version": 1,
+            "canonical_skills_root": str(canonical),
+            "agent_skill_roots": [str(agent_root)],
+        }
+        st = Store(root, skill_config=config)
+        tx = Transaction.begin(st, "external-artifact", ["src-a"])
+        tx.claim()
+        artifact = skill / "SKILL.md"
+        link = agent_root / "topic"
+        records = [[str(link), str(skill), False]]
+        tx.artifact_written(artifact, None, records)
+        artifact.write_text("# topic\n")
+        link.symlink_to(skill, target_is_directory=True)
+        undone = Transaction.load(st, "external-artifact").rollback("selftest")
+        check("configured canonical skill artifact is accepted",
+              Transaction.load(st, "external-artifact").d["state"] == "ROLLED_BACK")
+        check("rollback removes a transaction-owned discovery link",
+              undone["discovery_links"] == 1 and not link.exists())
+        check("rollback removes a new canonical artifact", not artifact.exists())
+
+        bad = Transaction.begin(st, "outside-link", ["src-b"])
+        bad.claim()
+        outside = pathlib.Path(tmp) / "outside/topic"
+        try:
+            bad.artifact_written(skill / "SKILL.md", None,
+                                 [[str(outside), str(skill), False]])
+            rejected_outside = False
+        except InvalidTransactionRecord:
+            rejected_outside = True
+        check("discovery link outside configured agent roots is rejected before record",
+              rejected_outside
+              and Transaction.load(st, "outside-link").d["state"] == "CLAIMED")
+        bad.rollback("selftest cleanup")
+
+        # RED probe: prove lexical containment is the guard that prevents an
+        # out-of-root link path from entering a recoverable transaction record.
+        red = Transaction.begin(st, "outside-link-red", ["src-b"])
+        red.claim()
+        _ledger_mod = sys.modules[__name__]
+        original = _ledger_mod._lexically_within
+        _ledger_mod._lexically_within = lambda path, owned_root: True
+        try:
+            red.artifact_written(skill / "SKILL.md", None,
+                                 [[str(outside), str(skill), False]])
+            neutered_accepts_outside = True
+        except InvalidTransactionRecord:
+            neutered_accepts_outside = False
+        finally:
+            _ledger_mod._lexically_within = original
+        check("RED probe: neutering lexical containment admits the outside link",
+              neutered_accepts_outside)
+        red.rollback("selftest cleanup")
 
     with tempfile.TemporaryDirectory() as tmp:
         root = _corpus(tmp)
