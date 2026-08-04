@@ -36,7 +36,7 @@ distill. They can archive files or propose durable guidance, so a human starts e
 There is no background capture: lessons are proposed only through human-started workflows, so
 verification gates cannot be bypassed.
 
-## Install for Claude & Codex and other compatible agents
+## Install for Claude Code, Codex, and compatible agents
 
 Clone the repository once, then link the canonical skill directories into the shared
 user-level Agent Skills directory:
@@ -160,9 +160,12 @@ starts:
 }
 ```
 
-Start a new Codex task, then use `/hooks` to review and trust the hook. Codex requires that
-review before running user-configured command hooks. No copied integration is needed here:
-because both paths point into the checkout, `git pull` updates the instructions and hook.
+Start a new Codex task or session so the updated configuration loads. In Codex CLI, use
+`/hooks` to review and trust the hook; Codex requires that review before running
+user-configured command hooks. Other Codex surfaces may not expose the CLI's `/hooks` browser.
+If it is unavailable, complete the review in Codex CLI, then start a new task in the intended
+surface. No copied integration is needed here: because both paths point into the checkout,
+`git pull` updates the instructions and hook.
 
 ### Update an agent integration
 
