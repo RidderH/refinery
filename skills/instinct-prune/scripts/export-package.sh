@@ -31,7 +31,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXED_PATHS=("hooks/surface-instincts.sh" "rules/instincts.md")
 REQUIRED_PACKAGE_FILES=(".claude-plugin/plugin.json" ".gitignore"
                         "CONTENT-SAFETY.md" "LICENSE" "PORTABILITY.md" "README.md"
-                        "package-manifest.json" "skills.sh.json")
+                        "package-manifest.json" "integration-manifest.json" "skills.sh.json")
 
 die() { echo "FATAL: $*" >&2; exit 2; }
 
@@ -486,6 +486,12 @@ selftest() {
       'package_manifest.py install' \
       'package_manifest.py update' \
       'package_manifest.py uninstall' > "$pkg/README.md"
+    cat > "$pkg/integration-manifest.json" <<'JSON'
+{"schema_version":1,"managed":[
+ {"source":"hooks/surface-instincts.sh","destination":"hooks/surface-instincts.sh","type":"file","mode":"executable","ownership":"managed","replace":"replace","install":true},
+ {"source":"rules/instincts.md","destination":"rules/instincts.md","type":"file","mode":"preserve","ownership":"managed","replace":"replace","install":true}
+]}
+JSON
     cat > "$pkg/package-manifest.json" <<'JSON'
 {"schema_version":1,"managed":[
  {"source":"skills/instinct-*","destination":"skills","type":"directory_glob","mode":"preserve","ownership":"managed","replace":"replace_matches","install":true},
@@ -499,6 +505,7 @@ selftest() {
  {"source":"skills.sh.json","destination":"skills.sh.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"README.md","destination":"README.md","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"package-manifest.json","destination":"package-manifest.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
+ {"source":"integration-manifest.json","destination":"integration-manifest.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"evals/privacy-gate-benchmark.json","destination":"evals/privacy-gate-benchmark.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false}
 ]}
 JSON
@@ -538,6 +545,7 @@ JSON
   [ ! -d "$stage/homunculus" ]; chk "the personal corpus never leaves" $((1 - $?))
   [ ! -f "$stage/rules/security.md" ]; chk "unrelated rules are not exported" $((1 - $?))
   [ -f "$stage/rules/instincts.md" ]; chk "the generic instincts rule IS exported" $((1 - $?))
+  [ -f "$stage/integration-manifest.json" ]; chk "the portable integration manifest is exported" $((1 - $?))
   [ -z "$(find "$stage" -name '__pycache__' -o -name '*.pyc')" ]
   chk "__pycache__ and .pyc are stripped from the copy (RED-proven below)" $((1 - $?))
 

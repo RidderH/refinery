@@ -191,6 +191,23 @@ def selftest():
               (config / "skills/instinct-one/SKILL.md").is_file()
               and (config / "hooks/surface-instincts.sh").is_file()
               and (config / "rules/instincts.md").is_file())
+        integration_data = {"schema_version": 1, "managed": [
+            {"source": "hooks/surface-instincts.sh", "destination": "hooks/surface-instincts.sh",
+             "type": "file", "mode": "executable", "ownership": "managed",
+             "replace": "replace", "install": True},
+            {"source": "rules/instincts.md", "destination": "rules/instincts.md",
+             "type": "file", "mode": "preserve", "ownership": "managed",
+             "replace": "replace", "install": True},
+        ]}
+        integration_path = package / "integration-manifest.json"
+        integration_path.write_text(json.dumps(integration_data))
+        integration = load_manifest(integration_path)
+        integration_config = root / "home/.another-agent"
+        apply_manifest(integration, package, integration_config, "install")
+        check("integration manifest installs only the portable hook and instructions",
+              (integration_config / "hooks/surface-instincts.sh").is_file()
+              and (integration_config / "rules/instincts.md").is_file()
+              and not (integration_config / "skills").exists())
         (config / "skills/instinct-one/obsolete").write_text("old")
         apply_manifest(manifest, package, config, "update")
         check("update reconciles owned directories and removes obsolete files",

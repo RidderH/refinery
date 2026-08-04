@@ -11,11 +11,16 @@ arrays, no `${var,,}`. (Both absences have bitten during development; the workar
 in the scripts with comments.) Newer bash works; `sh`/`zsh`/`dash` are not supported —
 invoke as `bash script.sh`.
 
-## Config root: `$HOME/.claude`, hardcoded
+## Corpus root: a portable hook override, with a compatibility default
 
-The corpus lives at `$HOME/.claude/homunculus/instincts/personal` and the scripts say so
-literally. Nonstandard config locations (`CLAUDE_CONFIG_DIR`, XDG paths) are **not
-supported**. Defined behavior when the path is absent:
+`surface-instincts.sh` accepts a corpus directory as its first argument or through
+`REFINERY_INSTINCT_DIR`. This lets an agent-specific lifecycle adapter use any suitable
+location. Without either, it uses the established default
+`$HOME/.claude/homunculus/instincts/personal`.
+
+The other v1 tooling still uses that established default, so do not set a different hook
+directory unless you have also arranged for the skills to use the same corpus. Defined behavior
+when the default path is absent:
 
 - `surface-instincts.sh` — exits 0 silently (no corpus is a valid state, not an error).
 - `instinct-buckets.sh` — exit 1 on a missing dir, exit 4 on an empty one ("walked 0
@@ -35,14 +40,14 @@ supported**. Defined behavior when the path is absent:
 Python: requires ≥ 3.9 (`str.removesuffix`, used in `shortlist.py` and `ruling.py`);
 tested on 3.14.
 
-## Symlinks: supported for skills, not Claude integration files
+## Symlinks: supported for skills, not agent integration files
 
 The four canonical skill directories may be symlinked into `~/.agents/skills` or a
 project's `.agents/skills`. Agent discovery resolves each named skill directly, and bundled
 commands resolve from the directory containing `SKILL.md`; they do not depend on a recursive
 scan finding the symlink.
 
-Claude hooks and rules still install by copy through `package_manifest.py`. Some `grep -r`
+Hooks and instruction files still install by copy through `package_manifest.py`. Some `grep -r`
 implementations do not descend into symlinked directories, and treating arbitrary hook/rule
 destinations as links would weaken the package installer's ownership boundary. The dedicated
 `link_agent_skills.py` therefore manages only `skills/instinct-*`, refuses conflicts before

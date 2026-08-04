@@ -2,7 +2,7 @@
 
 Turn what you learn in a session into something the next session already knows.
 
-An Agent Skills suite with optional Claude Code integration: four skills capture lessons
+An Agent Skills suite with optional agent integrations: four skills capture lessons
 from real sessions, keep them findable, retire the ones that stop being true, and promote
 the ones that keep recurring into skills, rules, or hook proposals.
 
@@ -16,23 +16,25 @@ The loop is **learn → distill → improve**, and every step is human-started.
 | `instinct-format` | The file contract every lesson obeys — frontmatter, triggers, evidence |
 | `instinct-prune` | Retire: bucket the corpus, shortlist candidates, human-verify, archive transactionally |
 | `instinct-distill` | Promote recurring lessons into skills, rules, commands, agents, or hook proposals |
-| `hooks/surface-instincts.sh` | Optional Claude session-start notice that the corpus exists |
-| `rules/instincts.md` | Optional Claude rule that tells Claude when to consult the corpus |
+| `hooks/surface-instincts.sh` | Optional session-start notice for hosts that support lifecycle hooks |
+| `rules/instincts.md` | Optional agent instructions that explain when to consult the corpus |
 
 ## Honest expectations
 
 **This ships the machinery, not the lessons.** The corpus is yours and starts empty.
 
-**Distillation needs some time to gather data.** The whole premise is that a lesson earns
+**Distillation needs time to gather data.** The whole premise is that a lesson earns
 promotion by recurring across many sessions — a pattern seen once is a coincidence. Running
-`instinct-distill` on a two-week-old corpus (depending on your agent usage) will mostly tell you it has nothing to promote,
-and that is the correct answer. Gates are deliberately not lowered for small corpora: a
+`instinct-distill` on a two-week-old corpus will usually tell you it has nothing to promote;
+how long this takes depends on how often you use your agent. That is the correct answer. Gates
+are deliberately not lowered for small corpora: a
 stranger's first distillation becoming a bad always-on rule would poison every later session.
 
 **Consequential workflows are human-started.** Claude's `disable-model-invocation` metadata
 and OpenAI's `allow_implicit_invocation: false` policy both protect analyze, prune, and
 distill. They can archive files or propose durable guidance, so a human starts every run.
-There is no background capture.
+There is no background capture: lessons are proposed only through human-started workflows, so
+verification gates cannot be bypassed.
 
 ## Install for Codex and compatible agents
 
@@ -70,11 +72,35 @@ npx skills add RidderH/refinery
 Local development does not need skills.sh or a public repository; the symlink install above
 works directly from any checkout.
 
-## Install the Claude Code integration
+## Install optional agent integrations
 
-Claude's hook and always-on rule are host-specific and deliberately use the existing copied
-package installer. Run this in addition to the shared skill links when you want the complete
-Claude integration:
+The hook and instructions are agent-neutral, but Agent Skills does not define one universal
+format for lifecycle hooks or always-on instructions. The package installer therefore copies
+the two portable files into whichever agent configuration directory you choose; you then
+register them using that agent's own settings format.
+
+The hook takes an optional corpus-directory argument, or reads `REFINERY_INSTINCT_DIR`. Without
+either, it keeps using `~/.claude/homunculus/instincts/personal` for backwards compatibility.
+Use the same directory for the hook and the instruction file so every agent consults one corpus.
+
+For any compatible agent, run this in addition to the shared skill links, replacing
+`<agent-config-dir>` with that agent's configuration directory:
+
+```bash
+git clone <this-repo> ~/refinery
+python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
+  install ~/refinery/integration-manifest.json ~/refinery <agent-config-dir>
+mkdir -p ~/.claude/homunculus/instincts/personal
+```
+
+Then add the contents of `<agent-config-dir>/rules/instincts.md` to the agent's always-on
+instructions, if it supports them. If it supports session-start hooks, register
+`<agent-config-dir>/hooks/surface-instincts.sh`; both are optional. Agents without either
+feature can still use all four skills normally.
+
+### Claude Code adapter
+
+For Claude Code, the configuration directory is `~/.claude`. Run:
 
 ```bash
 git clone <this-repo> ~/refinery
@@ -98,20 +124,60 @@ Then register the session-start hook by adding this to the `hooks.SessionStart` 
 }
 ```
 
-### Update the Claude integration
+### Codex adapter
 
-The versioned package manifest owns exactly the four skills, hook, and rule. Update
-reconciles those managed paths, removing files deleted upstream while leaving the corpus
-and all unrelated configuration untouched:
+Codex uses `~/.codex/AGENTS.md` for always-on instructions. Its `~/.codex/rules/`
+directory is for command-permission policies, not Markdown guidance. Add this to your existing
+`~/.codex/AGENTS.md`, adjusting the checkout path if needed:
+
+```md
+## Refinery instincts
+
+Before starting substantive work, read and follow `~/refinery/rules/instincts.md`.
+Treat it as part of these global instructions.
+```
+
+Then create or merge this into `~/.codex/hooks.json` to surface the corpus when a Codex session
+starts:
+
+```json
+{
+  "description": "Refinery session-start reminder.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/refinery/hooks/surface-instincts.sh",
+            "statusMessage": "Surfacing Refinery instincts",
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Start a new Codex task, then use `/hooks` to review and trust the hook. Codex requires that
+review before running user-configured command hooks. No copied integration is needed here:
+because both paths point into the checkout, `git pull` updates the instructions and hook.
+
+### Update an agent integration
+
+The versioned package manifest owns exactly the four skills, hook, and instruction file. Update
+reconciles those managed paths, removing files deleted upstream while leaving the corpus and all
+unrelated configuration untouched. Replace `<agent-config-dir>` as above:
 
 ```bash
 python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
-  update ~/refinery/package-manifest.json ~/refinery ~/.claude
+  update ~/refinery/integration-manifest.json ~/refinery <agent-config-dir>
 ```
 
 Your corpus lives in `~/.claude/homunculus/` and is never touched by an update.
 
-### Uninstall
+### Uninstall an agent integration
 
 Remove the shared Agent Skills links without touching their source checkout:
 
@@ -120,16 +186,15 @@ python3 ~/refinery/skills/instinct-prune/scripts/link_agent_skills.py \
   uninstall ~/refinery
 ```
 
-To remove the copied Claude integration:
+To remove the copied hook and instruction file:
 
 ```bash
 python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
-  uninstall ~/refinery/package-manifest.json ~/refinery ~/.claude
+  uninstall ~/refinery/integration-manifest.json ~/refinery <agent-config-dir>
 ```
 
-Then remove the whole `SessionStart` object you added above — deleting only the `command`
-line leaves an empty `hooks: []` array behind. Your corpus is left in place; delete
-`~/.claude/homunculus/` yourself if you want it gone.
+Remove the matching hook registration and instruction inclusion from the agent's settings. Your
+corpus is left in place; delete `~/.claude/homunculus/` yourself if you want it gone.
 
 ## Local configuration
 
@@ -142,7 +207,7 @@ Everything works without the file — path resolution falls back to generic disc
 
 ## Requirements
 
-- An Agent Skills-compatible coding agent; Claude Code is required only for its hook/rule integration
+- An Agent Skills-compatible coding agent; hooks and always-on instructions depend on the host
 - `bash` 3.2+, `python3` (≥ 3.9), standard POSIX tools; `gitleaks` only for the publish gate
 - Developed and tested on macOS (bash 3.2). Linux should work; Windows means WSL.
   Full platform contract — what's assumed, and what happens when an assumption fails —

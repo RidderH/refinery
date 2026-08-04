@@ -144,25 +144,35 @@ out=$(bash "$bs" --tsv 2>/dev/null | python3 "$sl" 2>&1); rc=$?
 [ "$rc" -eq 0 ]; chk "shortlist runs end-to-end on a 1-file corpus (rc=$rc)" $((1 - $?))
 note "shortlist said: $(echo "$out" | head -1 | cut -c1-90)"
 
-# ---------------------------------------------------------------- README JSON
-echo; echo "README SETTINGS SNIPPET"
+# ---------------------------------------------------------------- README CONFIGURATION SNIPPETS
+echo; echo "README CONFIGURATION SNIPPETS"
 python3 - "$PKG/README.md" <<'PY'
 import json, re, sys
 md = open(sys.argv[1]).read()
 blocks = re.findall(r"```json\n(.*?)```", md, re.S)
 if not blocks:
     print("  FAIL  README has no json block"); sys.exit(1)
+claude_ok = codex_ok = False
 for b in blocks:
     try:
         obj = json.loads(b)
     except Exception as e:
         print(f"  FAIL  README json does not parse: {e}"); sys.exit(1)
     h = obj.get("hooks")
-    if not isinstance(h, list) or not h or h[0].get("type") != "command":
-        print("  FAIL  README hook snippet is not a command-hook array"); sys.exit(1)
-    if "surface-instincts.sh" not in h[0].get("command", ""):
-        print("  FAIL  README hook snippet does not invoke the hook"); sys.exit(1)
-print("  PASS  README settings snippet parses and has the right shape")
+    if isinstance(h, list):
+        if h and h[0].get("type") == "command" and "surface-instincts.sh" in h[0].get("command", ""):
+            claude_ok = True
+    elif isinstance(h, dict):
+        starts = h.get("SessionStart")
+        if (isinstance(starts, list) and starts and isinstance(starts[0].get("hooks"), list)
+                and any("surface-instincts.sh" in item.get("command", "")
+                        for item in starts[0]["hooks"] if isinstance(item, dict))):
+            codex_ok = True
+if not claude_ok:
+    print("  FAIL  README has no valid Claude Code session-start hook snippet"); sys.exit(1)
+if not codex_ok:
+    print("  FAIL  README has no valid Codex SessionStart hook snippet"); sys.exit(1)
+print("  PASS  README Claude Code and Codex hook snippets parse and target the hook")
 PY
 [ $? -eq 0 ] || FAIL=$((FAIL+1))
 

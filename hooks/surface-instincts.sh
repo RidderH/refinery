@@ -1,5 +1,10 @@
 #!/bin/bash
-# SessionStart: point at the instinct corpus. Do NOT pre-select from it.
+# Session-start adapter: point at the instinct corpus. Do NOT pre-select from it.
+#
+# This script is host-neutral. Register it with whichever agent provides a
+# session-start lifecycle hook. The corpus directory can be supplied as its
+# first argument or through REFINERY_INSTINCT_DIR; the historic Claude Code
+# location remains the backwards-compatible default.
 #
 # History (2026-07-27): this hook used to inject the top N instinct filenames,
 # ranked by keyword hit-count for the current project directory. That was
@@ -26,7 +31,11 @@
 # Do not "improve" this by re-adding a ranked file list. That is the thing that
 # was removed, and the reasons above are not fixed by better keywords.
 
-INSTINCT_DIR="$HOME/.claude/homunculus/instincts/personal"
+case "$#" in
+  0) INSTINCT_DIR="${REFINERY_INSTINCT_DIR:-$HOME/.claude/homunculus/instincts/personal}" ;;
+  1) INSTINCT_DIR="$1" ;;
+  *) echo "usage: $0 [instinct-directory]" >&2; exit 2 ;;
+esac
 
 [ -d "$INSTINCT_DIR" ] || exit 0
 

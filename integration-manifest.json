@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "managed": [
+    {
+      "source": "hooks/surface-instincts.sh",
+      "destination": "hooks/surface-instincts.sh",
+      "type": "file",
+      "mode": "executable",
+      "ownership": "managed",
+      "replace": "replace",
+      "install": true
+    },
+    {
+      "source": "rules/instincts.md",
+      "destination": "rules/instincts.md",
+      "type": "file",
+      "mode": "preserve",
+      "ownership": "managed",
+      "replace": "replace",
+      "install": true
+    }
+  ]
+}

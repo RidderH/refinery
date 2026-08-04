@@ -101,6 +101,15 @@
       "install": false
     },
     {
+      "source": "integration-manifest.json",
+      "destination": "integration-manifest.json",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
       "source": "evals/privacy-gate-benchmark.json",
       "destination": "evals/privacy-gate-benchmark.json",
       "type": "metadata",
