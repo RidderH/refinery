@@ -23,17 +23,16 @@ The loop is **learn → distill → improve**, and every step is human-started.
 
 **This ships the machinery, not the lessons.** The corpus is yours and starts empty.
 
-**Distillation needs months of recurrence data.** The whole premise is that a lesson earns
+**Distillation needs some time to gather data.** The whole premise is that a lesson earns
 promotion by recurring across many sessions — a pattern seen once is a coincidence. Running
-`instinct-distill` on a two-week-old corpus will mostly tell you it has nothing to promote,
+`instinct-distill` on a two-week-old corpus (depending on your agent usage) will mostly tell you it has nothing to promote,
 and that is the correct answer. Gates are deliberately not lowered for small corpora: a
 stranger's first distillation becoming a bad always-on rule would poison every later session.
 
 **Consequential workflows are human-started.** Claude's `disable-model-invocation` metadata
 and OpenAI's `allow_implicit_invocation: false` policy both protect analyze, prune, and
 distill. They can archive files or propose durable guidance, so a human starts every run.
-There is no background capture; the Stop-hook that once proposed lessons inline was removed
-because it bypassed every verification gate.
+There is no background capture.
 
 ## Install for Codex and compatible agents
 
