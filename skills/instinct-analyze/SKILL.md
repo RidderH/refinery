@@ -131,7 +131,7 @@ Give each agent the candidate's claim, its class, the relevant file paths, and t
 
 ```
 { id, class, verdict: SAVE|DROP|BUMP|MERGE|ELSEWHERE|UNVERIFIED,
-  dup: NEW|BUMP <id>|MERGE <id>,
+  dup: NEW|EXACT <id>|PARTIAL <id>,
   confidence_action: BUMP|UNCHANGED,
   reality_citation: "<file:line or exact command + relevant output>" | null,
   docs_citation: "<ctx7 ref + version>" | null,
@@ -143,7 +143,22 @@ Give each agent the candidate's claim, its class, the relevant file paths, and t
 `confidence_action` independently records whether this session is a fresh confirmation of an
 existing lesson. They may combine: a candidate can `MERGE` new trigger coverage into an
 existing file **and** return `confidence_action: BUMP`. `SAVE` starts a new instinct at 0.3;
-`BUMP` adds 0.1 to an existing one; `UNCHANGED` leaves confidence and evidence count alone.
+`BUMP` adds 0.1 to an existing one; `UNCHANGED` leaves an existing instinct's confidence and
+evidence count alone. A `SAVE` still creates its initial evidence entry with `evidence_count: 1`.
+
+Only these combinations are valid:
+
+| `verdict` | Allowed `dup` | Allowed `confidence_action` | Meaning |
+|---|---|---|---|
+| `SAVE` | `NEW` | `UNCHANGED` | Create a new instinct at confidence 0.3. |
+| `DROP` | any | `UNCHANGED` | Recommend no write. |
+| `BUMP` | `EXACT <id>` | `BUMP` | Add independent confirming evidence to the exact existing lesson. |
+| `MERGE` | `PARTIAL <id>` | `UNCHANGED` or `BUMP` | Extend partial coverage; bump only when the session independently confirms the lesson. |
+| `ELSEWHERE` | any | `UNCHANGED` | Route the lesson outside the instinct corpus. |
+| `UNVERIFIED` | any | `UNCHANGED` | Do not recommend a write until reality is established. |
+
+Before Phase 4, validate the tuple against this table. Ask the verifier once to correct an
+invalid combination; if it still does not return a valid tuple, treat it as `UNVERIFIED`.
 
 **A candidate with `reality_citation: null` may not return `SAVE`.** Return `UNVERIFIED` and say what stopped the probe; the orchestrator runs it before ranking. An agent that could not confirm a claim will often report that honestly in prose and still mark it `SAVE` — measured once: a verifier wrote "could not reproduce directly — this is a real gap, not a pass" and returned `SAVE` anyway, on a claim the orchestrator's own probe then refuted twice. Honesty in the narrative is not a control; the verdict field is.
 
@@ -151,8 +166,8 @@ Also treat a blocked tool call as a fact to check, not a cause to report. The sa
 
 **(a) Duplicate check** — gate D already swept for obvious coverage and may have handed you a path to start from; go deeper than a keyword match. Grep `~/.claude/homunculus/instincts/personal/` — the sole corpus — for the candidate's key terms, and for the domain, including synonyms gate D would not have guessed. (This line named a second path, `inherited/`, that has never existed; see the note under Phase 2's grep.) Return one of:
 - `NEW` — no existing instinct covers this
-- `BUMP <id>` — an existing instinct already says this; the session is fresh evidence
-- `MERGE <id>` — partial overlap; the two should become one file
+- `EXACT <id>` — an existing instinct already covers the same lesson
+- `PARTIAL <id>` — an existing instinct covers only part of the lesson
 
 **(b) Reality check** — is the claim actually true *on this branch, right now*? Open the file,
 run the grep, count the callsites. Return an exact `file:line` citation or the complete command
