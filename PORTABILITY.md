@@ -40,18 +40,33 @@ when the default path is absent:
 Python: requires ≥ 3.9 (`str.removesuffix`, used in `shortlist.py` and `ruling.py`);
 tested on 3.14.
 
-## Symlinks: supported for skills, not agent integration files
+## Skill roots and symlinks
 
-The four canonical skill directories may be symlinked into `~/.agents/skills` or a
-project's `.agents/skills`. Agent discovery resolves each named skill directly, and bundled
-commands resolve from the directory containing `SKILL.md`; they do not depend on a recursive
-scan finding the symlink.
+Agent Skills defines the skill-directory format, not one universal discovery directory.
+Refinery stores promoted skill bytes once under `canonical_skills_root`; each configured
+`agent_skill_roots` directory receives a managed per-skill symlink. The `shared` profile uses
+`~/.agents/skills` as canonical storage, which Codex discovers directly, and adapts Claude Code
+through links in `~/.claude/skills`. The `codex` and `claude` profiles write directly to only that
+host's discovery root.
+
+Configuration lives at `${XDG_CONFIG_HOME:-~/.config}/refinery/skill-roots.json`. All stored
+paths are absolute so a transaction binds to exact files rather than whichever home or working
+directory a later recovery process happens to have. The config path and every managed skills
+root must be real paths, not symlinks; per-skill links are the only links this layer owns.
+
+The four canonical Refinery workflow directories may likewise be symlinked into an agent or
+project skills root. Agent discovery resolves each named skill directly, and bundled commands
+resolve from the directory containing `SKILL.md`; they do not depend on a recursive scan finding
+the symlink.
 
 Hooks and instruction files still install by copy through `package_manifest.py`. Some `grep -r`
 implementations do not descend into symlinked directories, and treating arbitrary hook/rule
 destinations as links would weaken the package installer's ownership boundary. The dedicated
 `link_agent_skills.py` therefore manages only `skills/instinct-*`, refuses conflicts before
 creating any link, and removes only links that point to the selected checkout.
+`skill_roots.py` separately manages links for skills produced by distillation and records each
+planned link in the distillation ledger so rollback removes only links created by that
+transaction.
 
 ## Whitespace in paths
 

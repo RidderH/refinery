@@ -57,6 +57,29 @@ chk "no build artifacts were installed" $((1 - $?))
 [ ! -e "$HOME/.claude/settings.json" ]
 chk "install did NOT write settings.json (registration stays manual)" $((1 - $?))
 
+# -------------------------------------------------------------- agent profiles
+echo; echo "AGENT-SPECIFIC SKILL ROOT PROFILES"
+ROOT_TOOL="$PKG/skills/instinct-distill/scripts/skill_roots.py"
+CODEX_PROFILE_HOME="$ROOM/codex-profile-home"
+mkdir -p "$CODEX_PROFILE_HOME"
+env HOME="$CODEX_PROFILE_HOME" XDG_CONFIG_HOME="$CODEX_PROFILE_HOME/.config" \
+  python3 "$ROOT_TOOL" setup codex "$PKG" >/dev/null
+[ -L "$CODEX_PROFILE_HOME/.codex/skills/instinct-distill" ]
+chk "Codex-only profile links Refinery under ~/.codex/skills" $((1 - $?))
+[ -f "$CODEX_PROFILE_HOME/.config/refinery/skill-roots.json" ]
+chk "Codex-only profile persists its canonical root" $((1 - $?))
+[ ! -e "$CODEX_PROFILE_HOME/.claude" ]
+chk "Codex-only profile creates no Claude configuration" $((1 - $?))
+
+SHARED_PROFILE_HOME="$ROOM/shared-profile-home"
+mkdir -p "$SHARED_PROFILE_HOME"
+env HOME="$SHARED_PROFILE_HOME" XDG_CONFIG_HOME="$SHARED_PROFILE_HOME/.config" \
+  python3 "$ROOT_TOOL" setup shared "$PKG" >/dev/null
+[ -L "$SHARED_PROFILE_HOME/.agents/skills/instinct-distill" ]
+chk "shared profile installs the canonical Agent Skills link" $((1 - $?))
+[ -L "$SHARED_PROFILE_HOME/.claude/skills/instinct-distill" ]
+chk "shared profile adds the Claude discovery adapter" $((1 - $?))
+
 # ---------------------------------------------------------------- hook
 echo; echo "SESSION-START HOOK"
 hook_out=$(bash "$HOME/.claude/hooks/surface-instincts.sh" 2>&1); hook_rc=$?

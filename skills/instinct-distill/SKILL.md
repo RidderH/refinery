@@ -19,6 +19,17 @@ bundled command. Do not assume the current working directory or a particular age
 root; Refinery may be linked from `.agents/skills`, copied into `.claude/skills`, or loaded
 directly from a checkout.
 
+Resolve promoted-skill storage before judging a destination:
+
+```bash
+python3 "$SKILL_DIR/scripts/skill_roots.py" resolve
+```
+
+`canonical_skills_root` owns the real skill directories. `agent_skill_roots` contains
+host-specific discovery directories that receive managed per-skill symlinks. Do not infer either
+from this skill's own installation path: Refinery's workflow skills and the user's distilled
+skills have different ownership and may deliberately live in different roots.
+
 ## Content boundary (binds every step below)
 
 This run turns prose into behavior, which makes instinct bodies an injection surface.
@@ -113,6 +124,9 @@ are never lowered for a small corpus.
 ### 6. Route
 
 [`ROUTING.md`](reference/ROUTING.md). Fold first; stop at the first rung that fits.
+For a skill route, inspect the resolved canonical root and every configured agent root before
+declaring that no covering artifact exists. New skill bytes go only to the canonical root; use
+`skill_roots.py link <canonical-skill-dir>` for the configured discovery links.
 
 ### 7. Ship transactionally
 
@@ -120,10 +134,11 @@ One cluster is one transaction (`scripts/ledger.py`). See the caller contract be
 part of the protocol no script can enforce.
 
 Before opening one transaction, show the human one review surface containing: source ids and
-hashes, destination artifact and prior hash, full proposed artifact text, citation rewrites,
-archive and MANIFEST destinations, expected postconditions, rollback snapshot/path, and the
-transaction identifier. Approval applies to that transaction only; any changed source, artifact,
-or destination invalidates it and requires a fresh review.
+hashes, destination artifact and prior hash, full proposed artifact text, every planned discovery
+link and whether it already exists, citation rewrites, archive and MANIFEST destinations,
+expected postconditions, rollback snapshot/path, and the transaction identifier. Approval applies
+to that transaction only; any changed source, artifact, link, or destination invalidates it and
+requires a fresh review.
 
 ---
 
@@ -147,6 +162,7 @@ Because step 1 re-runs the last step, each effect must survive being performed t
 | Effect | Made idempotent by |
 |---|---|
 | artifact write | content hash — rewriting identical bytes is a no-op |
+| discovery link | create only when absent; an identical owned link is a no-op |
 | citation repoint | the `(file, old, new)` triple is applied only where `old` is still present |
 | archive move | `mv` only when the source exists and the destination does not |
 | MANIFEST rows | rows keyed by cluster id; re-adding an existing row is a no-op |
@@ -159,7 +175,8 @@ early, so a protocol bug aborts rather than corrupts.
 
 ### 4. Rollback of an artifact **edit** needs bytes the ledger does not hold
 
-`rollback()` undoes citations and archive moves — including, since this review, each source's
+`rollback()` undoes transaction-created discovery links, citations and archive moves — including
+each source's
 sibling `<id>.evidence.md`, without which a rolled-back lesson came back with the very history
 the gate reads still sitting in the pruned directory, and nothing went red. It also deletes an
 artifact that did not exist before the transaction. For an **edit to a pre-existing artifact it
@@ -194,10 +211,10 @@ sources to `prune` while the artifact may already exist.
 
 ## Scripts
 
-No script uses `argparse` — flags are matched by membership in `sys.argv`. There is **no
-`--help`.** `shortlist.py` rejects an unrecognized flag (exit 2) and a nonexistent explicit or
-default corpus root (exit 3); every other script here still has no flag validation and silently
-ignores an unknown flag. Read a script's docstring for its real interface.
+No script uses `argparse`; read a script's docstring for its real interface. `skill_roots.py`
+uses strict positional commands and rejects unknown shapes. `shortlist.py` rejects an
+unrecognized flag (exit 2) and a nonexistent explicit or default corpus root (exit 3); several
+older scripts still match flags by membership in `sys.argv`.
 
 | Script | Does | Verify |
 |---|---|---|
@@ -206,12 +223,13 @@ ignores an unknown flag. Read a script's docstring for its real interface.
 | `migrate_evidence.py` | mechanical evidence migration; `--report` is dry | `--selftest` |
 | `lint_evidence.py` | the gate: fails when evidence is invisible to the parser; writes nothing | `--selftest` |
 | `ledger.py` | transaction state machine; `--status` reads | `--selftest` |
+| `skill_roots.py` | profiles, canonical storage, and managed discovery links | `--selftest` |
 | `measure_signals.py` | signal separation, `top_k` sweep, format split | `--selftest` |
 | `recall_test.py` | recall vs the 56 human-made ground-truth clusters | (measurement) |
 | `demo_run.py` | drives the whole loop over `fixtures/demo/` | `--selftest` |
 
 ```bash
-for s in migrate_evidence ledger shortlist build_index measure_signals demo_run; do
+for s in migrate_evidence ledger skill_roots shortlist build_index measure_signals demo_run; do
   python3 "$SKILL_DIR/scripts/$s.py" --selftest; done      # all must print SELFTEST: PASS
 ```
 
@@ -242,7 +260,8 @@ green. Green-on-current-data proves only that the bad input is absent.
 
 - Every source was read in full, typed, gated, and routed with the reason recorded.
 - The human approved the complete artifact text and named source ids for this transaction only.
-- The artifact, citations, archive, MANIFEST, and watermark match their recorded postconditions.
+- The artifact, discovery links, citations, archive, MANIFEST, and watermark match their recorded
+  postconditions.
 - The transaction is terminal, claims are released, and no rollback snapshot or recovery step is
   outstanding.
 - The promoted artifact passes its own syntax/tests and the source evidence lineage remains

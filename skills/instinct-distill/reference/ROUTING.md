@@ -17,7 +17,7 @@ context on every session forever, and nothing ever demotes it.
 | # | Surface | Costs | Choose when |
 |---|---|---|---|
 | 0 | **Fold** into a live skill/rule | nothing new | An existing artifact already covers the area |
-| 1 | **New skill** `skills/<name>/SKILL.md` | lazy load | The lesson is knowledge needed when a describable trigger appears |
+| 1 | **New skill** `<canonical_skills_root>/<name>/SKILL.md` | lazy load | The lesson is knowledge needed when a describable trigger appears |
 | 2 | **Skill + rule stub** `rules/<name>.md` | **every session, forever** | …and the trigger fires *before* anyone would load a skill (§ below) |
 | 3 | **Command** `commands/<name>.md` | lazy, user-invoked | The lesson is a procedure a human runs at a moment they choose |
 | 4 | **Agent** `agents/<name>.md` | lazy, own context | The lesson is a *role* that needs its own context window and tool restriction |
@@ -29,12 +29,18 @@ Rung 7 is a real outcome, recorded in the ledger with its reason (#13). A cluste
 but cannot be expressed as a trigger, a procedure, a role, or a check is a *reporting* result,
 not a failure of the run.
 
-**Write the artifact to its live path, not to a staging directory.** A skill is live only at
-`~/.claude/skills/<name>/SKILL.md`; `~/.claude/homunculus/evolved/` is **not** on the
-skill-discovery path, so a draft written there never activates and nothing reports that it
-didn't. `/evolve` carried this warning because it had already cost three drafts left inert for
-months, and the directory still holds an un-activated `agents/plan-reviewer.md` today. Use
-`evolved/` only for staging you intend to promote by hand, and never as the end of a run.
+**Write skill bytes to the configured canonical root, not to a staging or host-specific copy.**
+Resolve it with `scripts/skill_roots.py resolve`. Codex can discover the shared
+`~/.agents/skills` root directly; hosts with a different discovery directory receive a managed
+per-skill symlink from `agent_skill_roots`. `~/.claude/homunculus/evolved/` is not a discovery
+path, so a draft written there never activates and nothing reports that it didn't. `/evolve`
+carried this warning because it had already cost three drafts left inert for months.
+
+Before choosing rung 0 or 1, inspect the canonical root and every configured agent root. If a
+covering skill exists only as a real directory in a host-specific root, do not create a duplicate
+with the same name. Propose moving those bytes to the canonical root and replacing the old
+directory with a managed link as part of the same human-reviewed transaction. The exact source,
+destination and link are approval-bound effects.
 
 ---
 
@@ -48,8 +54,9 @@ Cannot name one → **fold**. This is the same devil's-advocate gate `rules/agen
 refactor candidates, and it exists because "it deserves its own file" is always available and
 never falsifiable.
 
-A fold still ships: the lesson's text lands in the target's own voice, the sources are archived,
-and the MANIFEST records the lineage. Rung 0 is not "do nothing".
+A fold still ships: the lesson's text lands in the target's own voice, configured discovery
+links resolve to that canonical target, the sources are archived, and the MANIFEST records the
+lineage. Rung 0 is not "do nothing".
 
 ---
 
