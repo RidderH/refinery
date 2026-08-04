@@ -1,0 +1,16 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Refinery",
+      "description": "Capture, format, retire, and promote durable lessons from agent sessions.",
+      "skills": [
+        "instinct-analyze",
+        "instinct-format",
+        "instinct-prune",
+        "instinct-distill"
+      ]
+    }
+  ]
+}

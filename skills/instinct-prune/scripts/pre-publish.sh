@@ -19,6 +19,10 @@
 #      examples in this file itself: this script ships as part of the
 #      surface it scans, and layer 3 has no way to tell its own doc text
 #      from a real leak.
+# ALLOW_PUBLIC_NAMES is a separate, explicit exception for identifiers that
+# are intentionally part of the public package identity (for example, its
+# GitHub owner). Entries must exactly equal a DENY_NAMES token. This keeps a
+# public maintainer handle from weakening checks for every other private name.
 #
 # .git/ is EXCLUDED from every layer of the tree scan below. This gate judges
 # shipped CONTENT (the working tree); a repo's HISTORY (reflogs, remote URLs,
@@ -40,6 +44,7 @@
 set -uo pipefail
 
 CONF="${LOCAL_PROJECTS_CONF:-$HOME/.claude/homunculus/local-projects.conf}"
+ALLOW_PUBLIC_NAMES="${ALLOW_PUBLIC_NAMES:-}"
 # Every skill in the published package, plus the hook. `instinct-analyze` was
 # MISSING here until 2026-08-02 while the package shipped four skills — the
 # gate reported a clean surface it had never read. A scanner that enumerates
@@ -97,6 +102,14 @@ _id_allowed() {
   return 1
 }
 
+_name_is_public() {
+  local allowed
+  for allowed in $ALLOW_PUBLIC_NAMES; do
+    [ "$1" = "$allowed" ] && return 0
+  done
+  return 1
+}
+
 # Filename layers must judge the path relative to the scanned ROOT, not the
 # absolute path on disk — every absolute path under this operator's tree
 # starts with their own home directory, which is not part of what a package
@@ -130,6 +143,7 @@ scan() {  # $@ = dirs/files to scan; returns 0 clean, 1 hits, 2 cannot-run
   load_deny || return 2
   local rc=0 name hits namehits
   for name in $DENY_NAMES; do
+    _name_is_public "$name" && continue
     # -w: whole words only — a deny name like "ring" must not match inside
     # "boring" (this gate's own first baseline run tripped on exactly such a
     # substring). Hyphenated names still match.
@@ -150,7 +164,7 @@ scan() {  # $@ = dirs/files to scan; returns 0 clean, 1 hits, 2 cannot-run
   local label re idhits
   for label in email abs-home-path; do
     case "$label" in
-      email) re='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' ;;
+      email) re='[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' ;;
       abs-home-path) re='/(Users|home)/[A-Za-z0-9._-]+/' ;;
     esac
     # -o (one match per output line, "file:line:match") so a line carrying
@@ -231,6 +245,17 @@ selftest() {
   scan "$tmp/tree" >/dev/null 2>&1; [ $? -eq 1 ]; chk "planted denylist name trips the gate (RED)" $((1 - $?))
   rm "$tmp/tree/b.md"
   scan "$tmp/tree" >/dev/null 2>&1; [ $? -eq 0 ]; chk "clean tree passes after removal (GREEN)" $((1 - $?))
+
+  # A deliberately public package identity may also be present in a broad
+  # local denylist. The exception is exact and does not suppress siblings.
+  echo "mentions Secret_Client here" > "$tmp/tree/b.md"
+  ALLOW_PUBLIC_NAMES="Secret_Client" scan "$tmp/tree" >/dev/null 2>&1
+  [ $? -eq 0 ]; chk "explicit public-name exception permits that exact deny token" $((1 - $?))
+  printf 'DENY_NAMES="Secret_Client Other_Private"\n' > "$tmp/conf-public"; chmod 600 "$tmp/conf-public"
+  echo "mentions Other_Private here" > "$tmp/tree/b.md"
+  CONF="$tmp/conf-public" ALLOW_PUBLIC_NAMES="Secret_Client" scan "$tmp/tree" >/dev/null 2>&1
+  [ $? -eq 1 ]; chk "public-name exception does not suppress another deny token" $((1 - $?))
+  rm "$tmp/tree/b.md"
 
   # Substring must NOT trip: deny "ring" vs body "boring" (regression: the
   # first live baseline flagged a short deny name inside an ordinary word)

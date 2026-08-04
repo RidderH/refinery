@@ -35,3 +35,9 @@ PATH_PREFIXES="acme-web-app"
 # the shipping tree for each and fails on any hit. Typically the union of
 # every private client/project name above plus personal identifiers.
 DENY_NAMES="Client_Portal legacy-checkout Acme_App your-username your-domain.example"
+
+# Optional exact DENY_NAMES tokens that are intentionally public package
+# identities, such as the repository owner's public GitHub handle. Keep this
+# narrow: every listed token is permitted in both the release tree and its
+# Git history.
+ALLOW_PUBLIC_NAMES=""

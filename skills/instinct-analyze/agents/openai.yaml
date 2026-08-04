@@ -1,0 +1,6 @@
+interface:
+  display_name: "Instinct Analyze"
+  short_description: "Capture verified lessons from the current session"
+  default_prompt: "Use $instinct-analyze to review this session and recommend durable lessons without writing them yet."
+policy:
+  allow_implicit_invocation: false

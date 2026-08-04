@@ -13,6 +13,11 @@ this ships them. `instinct-format` owns the file contract both share.
 citations and advances a watermark, and there is no trigger text that should cause a model to
 begin doing that on its own initiative.
 
+Resolve `SKILL_DIR` to the absolute directory containing this `SKILL.md` before running a
+bundled command. Do not assume the current working directory or a particular agent's install
+root; Refinery may be linked from `.agents/skills`, copied into `.claude/skills`, or loaded
+directly from a checkout.
+
 ## Content boundary (binds every step below)
 
 This run turns prose into behavior, which makes instinct bodies an injection surface.
@@ -54,7 +59,7 @@ watermark → shortlist → judge partition → full read → gate → route →
 ### 1. Read the watermark and recover
 
 ```bash
-python3 scripts/ledger.py --status [CORPUS_ROOT]
+python3 "$SKILL_DIR/scripts/ledger.py" --status [CORPUS_ROOT]
 ```
 
 Prints open transactions, claimed ids, and the watermark. **A non-empty open-transaction list is
@@ -64,7 +69,7 @@ will claim the same sources.
 ### 2. Shortlist — mechanical, no judgment
 
 ```bash
-python3 scripts/shortlist.py [--top-k 12] [--min-score 0.0] [--json] [CORPUS_ROOT]
+python3 "$SKILL_DIR/scripts/shortlist.py" [--top-k 12] [--min-score 0.0] [--json] [CORPUS_ROOT]
 ```
 
 Partitions by `domain`, ranks within the partition by `trigger:`+`action:` lexical overlap
@@ -92,7 +97,7 @@ lesson claims, and the gate turns on what the evidence *proves*.
 ### 5. Gate
 
 ```bash
-python3 scripts/build_index.py --ids <id> <id> … [CORPUS_ROOT]
+python3 "$SKILL_DIR/scripts/build_index.py" --ids <id> <id> … [CORPUS_ROOT]
 ```
 
 Emits per-file outcome counts, distinct-date count, and a `gate_hint` saying **why** something is
@@ -206,7 +211,7 @@ ignores an unknown flag. Read a script's docstring for its real interface.
 
 ```bash
 for s in migrate_evidence ledger shortlist build_index measure_signals demo_run; do
-  python3 scripts/$s.py --selftest; done      # all must print SELFTEST: PASS
+  python3 "$SKILL_DIR/scripts/$s.py" --selftest; done      # all must print SELFTEST: PASS
 ```
 
 `fixtures/demo/` is a 7-lesson demo corpus (plus one `.evidence.md` archive) built to exercise

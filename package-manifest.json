@@ -74,6 +74,15 @@
       "install": false
     },
     {
+      "source": "skills.sh.json",
+      "destination": "skills.sh.json",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
       "source": "package-manifest.json",
       "destination": "package-manifest.json",
       "type": "metadata",

@@ -51,6 +51,70 @@ class ValidateSkillsCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("VALIDATION PASSED: 4 Refinery skills", result.stdout)
 
+    def test_shipped_manual_skills_disable_openai_implicit_invocation(self):
+        for name in ("instinct-analyze", "instinct-prune", "instinct-distill"):
+            metadata = (
+                SOURCE_ROOT / "skills" / name / "agents/openai.yaml"
+            ).read_text()
+            self.assertIn("allow_implicit_invocation: false", metadata, name)
+
+    def test_missing_openai_metadata_fails_when_suite_uses_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            first = root / "skills/instinct-first"
+            second = root / "skills/instinct-second"
+            for skill in (first, second):
+                skill.mkdir(parents=True)
+                (skill / "SKILL.md").write_text(
+                    "---\n"
+                    f"name: {skill.name}\n"
+                    "description: A valid cross-agent fixture.\n"
+                    "---\n\n# Fixture\n"
+                )
+            (first / "agents").mkdir()
+            (first / "agents/openai.yaml").write_text(
+                "interface:\n"
+                "  display_name: First\n"
+                "  short_description: First fixture\n"
+                "  default_prompt: Use $instinct-first now.\n"
+                "policy:\n"
+                "  allow_implicit_invocation: true\n"
+            )
+
+            result = self.run_validator(root)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("skills/instinct-second/agents/openai.yaml: missing", result.stderr)
+
+    def test_manual_claude_policy_cannot_enable_openai_implicit_invocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            skill = root / "skills/instinct-manual"
+            (skill / "agents").mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\n"
+                "name: instinct-manual\n"
+                "description: A human starts this workflow.\n"
+                "disable-model-invocation: true\n"
+                "---\n\n# Manual\n"
+            )
+            (skill / "agents/openai.yaml").write_text(
+                "interface:\n"
+                "  display_name: Manual\n"
+                "  short_description: Manual fixture\n"
+                "  default_prompt: Use $instinct-manual now.\n"
+                "policy:\n"
+                "  allow_implicit_invocation: true\n"
+            )
+
+            result = self.run_validator(root)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "manual-only Claude skill must set allow_implicit_invocation to false",
+                result.stderr,
+            )
+
     def test_malformed_yaml_frontmatter_fails_with_the_skill_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

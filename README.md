@@ -2,9 +2,9 @@
 
 Turn what you learn in a session into something the next session already knows.
 
-A Claude Code plugin: four skills and one hook that capture lessons from real sessions,
-keep them findable, retire the ones that stop being true, and promote the ones that keep
-recurring into skills, rules, or hook proposals.
+An Agent Skills suite with optional Claude Code integration: four skills capture lessons
+from real sessions, keep them findable, retire the ones that stop being true, and promote
+the ones that keep recurring into skills, rules, or hook proposals.
 
 The loop is **learn → distill → improve**, and every step is human-started.
 
@@ -16,8 +16,8 @@ The loop is **learn → distill → improve**, and every step is human-started.
 | `instinct-format` | The file contract every lesson obeys — frontmatter, triggers, evidence |
 | `instinct-prune` | Retire: bucket the corpus, shortlist candidates, human-verify, archive transactionally |
 | `instinct-distill` | Promote recurring lessons into skills, rules, commands, agents, or hook proposals |
-| `hooks/surface-instincts.sh` | Session-start notice that the corpus exists, and how to search it |
-| `rules/instincts.md` | The always-on rule that tells Claude when to consult the corpus |
+| `hooks/surface-instincts.sh` | Optional Claude session-start notice that the corpus exists |
+| `rules/instincts.md` | Optional Claude rule that tells Claude when to consult the corpus |
 
 ## Honest expectations
 
@@ -29,12 +29,53 @@ promotion by recurring across many sessions — a pattern seen once is a coincid
 and that is the correct answer. Gates are deliberately not lowered for small corpora: a
 stranger's first distillation becoming a bad always-on rule would poison every later session.
 
-**Nothing is auto-invoked.** `instinct-prune` and `instinct-distill` are marked
-`disable-model-invocation` — they archive files and rewrite config, so a human starts every
-run. There is no background capture; the Stop-hook that once proposed lessons inline was
-removed because it bypassed every verification gate.
+**Consequential workflows are human-started.** Claude's `disable-model-invocation` metadata
+and OpenAI's `allow_implicit_invocation: false` policy both protect analyze, prune, and
+distill. They can archive files or propose durable guidance, so a human starts every run.
+There is no background capture; the Stop-hook that once proposed lessons inline was removed
+because it bypassed every verification gate.
 
-## Install
+## Install for Codex and compatible agents
+
+Clone the repository once, then link the canonical skill directories into the shared
+user-level Agent Skills directory:
+
+```bash
+git clone <this-repo> ~/refinery
+python3 ~/refinery/skills/instinct-prune/scripts/link_agent_skills.py \
+  install ~/refinery
+mkdir -p ~/.claude/homunculus/instincts/personal
+```
+
+The default destination is `~/.agents/skills`. Pass another directory as the final argument
+for an agent or project that uses a different discovery root:
+
+```bash
+python3 ~/refinery/skills/instinct-prune/scripts/link_agent_skills.py \
+  install ~/refinery /path/to/project/.agents/skills
+```
+
+The linker performs a complete conflict check before creating anything. It never replaces a
+real directory or a symlink owned by another checkout. Because the links point at the clone,
+`git pull` updates the installed skills without a reinstall.
+
+### Optional skills.sh install
+
+skills.sh is a distribution channel, not a runtime requirement. Once this repository is
+public, users can discover and install its skills from GitHub with:
+
+```bash
+npx skills add RidderH/refinery
+```
+
+Local development does not need skills.sh or a public repository; the symlink install above
+works directly from any checkout.
+
+## Install the Claude Code integration
+
+Claude's hook and always-on rule are host-specific and deliberately use the existing copied
+package installer. Run this in addition to the shared skill links when you want the complete
+Claude integration:
 
 ```bash
 git clone <this-repo> ~/refinery
@@ -58,7 +99,7 @@ Then register the session-start hook by adding this to the `hooks.SessionStart` 
 }
 ```
 
-### Update
+### Update the Claude integration
 
 The versioned package manifest owns exactly the four skills, hook, and rule. Update
 reconciles those managed paths, removing files deleted upstream while leaving the corpus
@@ -72,6 +113,15 @@ python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
 Your corpus lives in `~/.claude/homunculus/` and is never touched by an update.
 
 ### Uninstall
+
+Remove the shared Agent Skills links without touching their source checkout:
+
+```bash
+python3 ~/refinery/skills/instinct-prune/scripts/link_agent_skills.py \
+  uninstall ~/refinery
+```
+
+To remove the copied Claude integration:
 
 ```bash
 python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
@@ -93,7 +143,7 @@ Everything works without the file — path resolution falls back to generic disc
 
 ## Requirements
 
-- Claude Code
+- An Agent Skills-compatible coding agent; Claude Code is required only for its hook/rule integration
 - `bash` 3.2+, `python3` (≥ 3.9), standard POSIX tools; `gitleaks` only for the publish gate
 - Developed and tested on macOS (bash 3.2). Linux should work; Windows means WSL.
   Full platform contract — what's assumed, and what happens when an assumption fails —

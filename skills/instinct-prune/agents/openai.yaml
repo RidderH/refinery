@@ -1,0 +1,6 @@
+interface:
+  display_name: "Instinct Prune"
+  short_description: "Review and safely retire obsolete lessons"
+  default_prompt: "Use $instinct-prune to review retirement candidates, but make no changes without my explicit approval."
+policy:
+  allow_implicit_invocation: false
