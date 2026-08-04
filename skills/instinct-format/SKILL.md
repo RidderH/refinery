@@ -1,6 +1,6 @@
 ---
 name: instinct-format
-description: Use when writing a new instinct, converting an old instinct file, or reviewing whether one meets spec — and when another skill needs the instinct file contract.
+description: Define and validate the instinct file contract when creating, converting, reviewing, or supplying the contract to another skill.
 ---
 
 # Instinct file format
@@ -241,4 +241,20 @@ Compacting that history into the lesson file would have destroyed the signal.
 
 Full history. The lesson lives in `<id>.md`; this file exists so the pattern
 *across* entries stays visible.
+```
+
+## Definition of done
+
+- `id` matches the safe filename stem; required fields and the closed domain vocabulary validate.
+- `trigger` keeps every literal retrieval phrase on one physical line, and `action` reflects a
+  full read rather than a skim.
+- The body contains the Symptom, mechanism, action, and evidence required by this contract.
+- `evidence_count` reconciles with visible incidents and the sibling archive is authoritative
+  when present.
+- The canonical `scripts/instinct_record.py` parser returns no diagnostics for a completed file.
+
+Validate completion with:
+
+```bash
+python3 scripts/instinct_record.py --check <id>.md
 ```

@@ -1,6 +1,6 @@
 ---
 name: instinct-distill
-description: Promote recurring instincts into skills, rules, commands, agents or hook proposals. Run by a human on demand — never model-invoked. Replaces /evolve.
+description: Evaluate recurring instincts and promote qualifying lessons into the smallest human-approved skill, rule, command, agent, or hook proposal.
 disable-model-invocation: true
 ---
 
@@ -113,6 +113,12 @@ are never lowered for a small corpus.
 One cluster is one transaction (`scripts/ledger.py`). See the caller contract below — it is the
 part of the protocol no script can enforce.
 
+Before opening one transaction, show the human one review surface containing: source ids and
+hashes, destination artifact and prior hash, full proposed artifact text, citation rewrites,
+archive and MANIFEST destinations, expected postconditions, rollback snapshot/path, and the
+transaction identifier. Approval applies to that transaction only; any changed source, artifact,
+or destination invalidates it and requires a fresh review.
+
 ---
 
 ## The caller contract
@@ -169,8 +175,11 @@ this is the rollback path most likely to run.
 `Store.claimed_ids()` returns the source ids currently claimed. Invisible — **not**
 skip-with-a-warning. A warning in a batch run is a line nobody reads.
 
-Claims are released on `COMMITTED` or `ROLLED_BACK`. A claim older than one run is stale and
-reclaimable; without that, a crashed run wedges those files permanently.
+Claims are released on `COMMITTED` or `ROLLED_BACK`. A claim is stale — reclaimable via
+`Store.reclaim_stale()` — **only** when its transaction is terminal (`COMMITTED`/`ROLLED_BACK`)
+or absent; there is no run-age or timestamp component. A crashed run's claim is stale by that
+rule, but a healthy open transaction's claim is never stale no matter how long it's been open —
+don't add age-based reclamation, it would expose sources of a still-running transaction.
 
 **A ledger write that fails is fail-closed: keep the claim and stop.** Releasing it would expose
 sources to `prune` while the artifact may already exist.
@@ -180,8 +189,9 @@ sources to `prune` while the artifact may already exist.
 ## Scripts
 
 No script uses `argparse` — flags are matched by membership in `sys.argv`. There is **no
-`--help`, no flag validation, and an unknown flag is silently ignored.** Read a script's
-docstring for its real interface.
+`--help`.** `shortlist.py` rejects an unrecognized flag (exit 2) and a nonexistent explicit or
+default corpus root (exit 3); every other script here still has no flag validation and silently
+ignores an unknown flag. Read a script's docstring for its real interface.
 
 | Script | Does | Verify |
 |---|---|---|
@@ -222,171 +232,24 @@ self-check for exactly this: frontmatter says N entries and the parser found 0 �
 the thing it guards and confirm *that specific* assertion goes red, then revert and confirm
 green. Green-on-current-data proves only that the bad input is absent.
 
+## Definition of done
+
+- Every source was read in full, typed, gated, and routed with the reason recorded.
+- The human approved the complete artifact text and named source ids for this transaction only.
+- The artifact, citations, archive, MANIFEST, and watermark match their recorded postconditions.
+- The transaction is terminal, claims are released, and no rollback snapshot or recovery step is
+  outstanding.
+- The promoted artifact passes its own syntax/tests and the source evidence lineage remains
+  auditable.
+
 ---
 
-## What counts as one evidence entry (user ruling 2026-07-30)
+## Evidence maintenance
 
-**One incident = one entry. `evidence_count` is an inventory of incidents observed, not a count
-of gate-qualifying dates.** Three distinct failures inside a single session are three entries,
-each dated that day — do not fold them into one bullet, and do not lower a declared count to
-make a folded bullet reconcile.
+The settled incident-inventory rule, migration boundary algorithm, archive semantics, known parser
+limits, and re-measurement commands live in
+[`reference/EVIDENCE-MIGRATION.md`](reference/EVIDENCE-MIGRATION.md). Read it when typing,
+migrating, repairing, or auditing evidence.
 
-The objection this ruling overrules is that same-session observations are not independent, so
-counting them separately inflates the evidence. That objection is aimed at a risk **the gate
-already handles at a different layer**: `rf_distinct` de-duplicates dates via `set()`, so N
-same-day `repeated_failure` entries contribute exactly one qualifying date. Verified, not
-assumed — three same-date entries alone return
-`ineligible: repeated failures share one date`. Independence is enforced once, by the date set.
-Enforcing it a second time in the inventory buys nothing and costs the record its detail:
-"one computer-day can be many human-days", and a folded bullet is a lossy summary of incidents
-that genuinely happened separately.
-
-Consequences for anything reading or writing evidence:
-
-- A bullet narrating several incidents (`hit MULTIPLE times: (a)… (b)… (c)…`) is a **defect**,
-  not a style. Split it; keep the prose verbatim.
-- A declared-vs-parsed shortfall is therefore **never** resolved by lowering the declared
-  number to whatever the parser managed. It is resolved by making the entries readable. The one
-  narrow exception is a file declaring entries that **do not exist anywhere in it** — nothing
-  was ever recorded, so there is nothing to make readable.
-- `lint_evidence.py` does **not** detect a folded multi-incident bullet, and this rule does not
-  claim it does. The gate checks shape conformance, declared-vs-parsed, and reconciliation
-  (`FABRICATION` when migration would invent entries, `STALE COUNT` when the declared number
-  already trailed reality). Catching a fold needs a prose heuristic — "hit MULTIPLE times",
-  `(a)…(b)…(c)` — which false-positives on a single incident that merely enumerates, and a gate
-  that exits 1 does not get a heuristic without a measured false-positive rate first. Splitting a
-  folded bullet is a human judgment for now.
-
-## Known parser limits
-
-**The parser is deliberately strict and stays that way; `migrate_evidence.py` brings files TO
-it and `lint_evidence.py` fails when anything is still invisible** (user ruling 2026-07-30). So
-`build_index.py` recognises exactly one entry shape — a column-0
-`- **YYYY-MM-DD** \`outcome\`` bullet — plus the legacy bold-date bullet, and every limit below
-is a statement about what the *codemod* can carry across, not a request to loosen the parser.
-
-**What the codemod now handles.** It finds the entry boundary from the document's own
-structure, coarsest delimiter first, because segmenting on blank lines turns one incident into
-several (see § What counts as one evidence entry):
-
-1. a dated `## ` heading — the entry is the whole body beneath it, however many paragraphs;
-2. a `---` thematic break — one entry per block;
-3. dated column-0 bullets — each is an entry. An *undated* column-0 bullet beside them **stays
-   at column 0 and stays an entry**: it is ambiguous (continuation, or an undated incident), and
-   indenting it would DELETE it, since `build_index.PROSE` matches column 0 only. The one
-   exception is a list the entry's own sentence introduces with a colon — the author's
-   punctuation, not a guess. Demoting on a hunch cost 146 entries across 72 files before this
-   rule existed, silently, and every demotion is now counted in `demoted`;
-4. none of the above — a paragraph is an entry only if it *leads* with a date (first 60 chars).
-
-Continuation paragraphs are preserved indented under their entry, so no bytes are dropped and
-`build_index` reads them as prose. Text before the first delimiter is the document preamble and
-is never dated into an entry. A date comes from the entry text; failing that only, from the
-single ISO date of the enclosing `## ` heading (reported separately as `heading-dated`, because
-that date was not previously written in the file, and a human must review those); failing both,
-the block is left byte-for-byte untouched and counted `undatable`. **A date is never invented.**
-
-Measured on the real corpus (`record()` totals — a lesson's archive is the record when one
-exists, so counting only migrated-shape lines in the body under-reports): `green-guards-…` 8
-entries against a declared 8, `stacked-pr-…` 7 against 7, `duplicate-ui-aggregates-drift` 5
-against 5. **The codemod never makes a file gain entries beyond what it declares** — zero
-`FABRICATION` rows across all 424 files. That is a statement about the codemod, not about the
-corpus: 48 files already parse more than they declare (72 counting those declaring 0), which is
-stale frontmatter that predates this work and is the lint's `STALE COUNT` to report.
-
-A corpus-wide run refuses **0** files and exits **0** (`demoted=0`). It once refused 7, every one
-of them `before == after` — nothing destroyed, merely a stale declared count — which blocked
-strictly-improving migrations and made the ship sequence below unreachable. Loss is now the only
-refusal condition.
-
-**Remaining limits.** These are real and unfixed — the first two were found by dry-running real
-files rather than trusting an aggregate:
-
-- **Evidence lives under more than one heading.** Match `^##\s+[A-Za-z ]*Evidence\b`, never the
-  literal `## Evidence` — the highest-degree node in the whole link graph keeps its entries under
-  `## Additional evidence`, and an exact match normalised zero of them while reporting success.
-  Parenthetical tails (`## Evidence (n=5, latest 2)`) do parse.
-- **Indented bullets are continuation prose, not entries.** Counting them overstated the manual
-  work by ~62 bullets corpus-wide.
-- **A prose paragraph with no leading `-` is a fourth shape the PARSER still does not read.**
-  It does **not** reliably reach the loud `UNPARSED` branch — measured on the real
-  `check-docs-before-theorizing`, the index reported `ineligible: parsed 3 of 6 declared entries`,
-  counting 3 non-entries in place of the real ones: wrong for a reason no hint states. The
-  codemod now converts this shape, so the fix is to migrate the file; until it is migrated the
-  miscount above is what you will see, and `lint_evidence.py` is what tells you.
-- **A file may declare `evidence_count` and carry no evidence heading at all.** That one does
-  reach `UNPARSED`.
-- **A dated `## ` heading is a fifth shape the PARSER still does not read**, and it is the one
-  that marks an incident rather than decorating it. An archive entry written as
-  `## 2026-07-29 — two guards where one subsumes the other…` is invisible to `build_index`: only
-  column-0 bullets are entries. That is why `green-guards-prove-nothing-until-you-make-them-red`
-  reports `parsed 6 of 8`. Its `evidence_count` is **correct**; the parser is blind. Do not "fix"
-  such a count downward — migrate the file, which turns each dated heading's body into one
-  entry and brings it to exactly 8.
-**`lint_evidence.py` is a REPORT today, not a CI gate — do not wire it into CI yet.** On the
-live corpus it is `violating=402 / 424`. Running the fixer over a scratch copy of the whole
-corpus takes that to **16**, so the bulk is genuinely mechanical — but 16 is not 0, and the
-remainder is not fixable by the codemod. Re-derived after the guard fix: **9 files still declare
-more than the parser reads, and a corpus-wide fixer run changes that number not at all** — 6
-declare evidence that was never written into the file (no `## Evidence` heading; the ruling's
-narrow exception), and 3 genuinely hold fewer entries than they claim
-(`check-docs-before-theorizing` 5 of 6, `pg-get-functiondef-…` 1 of 2,
-`service-role-client-…` 2 of 3). None is refused — all three migrate cleanly and still fall
-short, because a folded multi-incident bullet needs a human to split it.
-Its own docstring argues "a gate that is always red is a gate nobody runs", and that is how it
-ships. Sequence: complete the corpus migration → correct the stale declared counts by hand →
-only then make it blocking. Re-measure with
-`python3 scripts/lint_evidence.py | tail -2` before believing any of these numbers.
-
-**Corpus numbers — re-derive them, do not trust them.** Every figure below was measured with
-`build_index.record()` semantics (the archive is the record when one exists); measuring a lesson
-BODY instead inflates every shortfall, because the body is a "latest 2" excerpt by contract. The
-command that produces all of them:
-
-```bash
-python3 - <<'EOF'
-import sys, pathlib; sys.path.insert(0, "skills/instinct-distill/scripts")
-import build_index as B, migrate_evidence as M
-R = M.DEFAULT_ROOT
-ids = sorted(p.stem for p in R.glob("*.md") if not p.name.endswith(".evidence.md"))
-recs = [(i, B.record(R, i)) for i in ids]
-recs = [(i, r) for i, r in recs if not (r.get("malformed") or r.get("missing"))]
-short = [(i, r) for i, r in recs if r["evidence_count"] > B._total(r["evidence"])]
-print("shortfall:", len(short), " UNPARSED:", sum(1 for _, r in short if B._total(r["evidence"]) == 0))
-print("counted > declared:", sum(1 for i, r in recs if B._total(r["evidence"]) > r["evidence_count"] > 0),
-      "(+", sum(1 for i, r in recs if B._total(r["evidence"]) > r["evidence_count"] == 0), "declaring 0)")
-EOF
-```
-
-- **9 files hold fewer readable entries than they declare; 6 of those parse ZERO** (`UNPARSED`).
-  **The codemod recovers 0 of the 9** — do not read `lint_evidence.py`'s remediation line as
-  promising otherwise. Six declare evidence that was never written into the file at all (no
-  `## Evidence` heading — the ruling's narrow exception); the other three hold genuinely fewer
-  entries than the number claims. All three **migrate cleanly and still fall short** — they are
-  not refused. Each carries a folded multi-incident bullet, which only a human can split, and
-  splitting it is what closes the gap.
-- **48 files parse MORE entries than they declare** (plus 24 more that declare `0`, so 72 in
-  total). Stale `evidence_count`, not a codemod artefact — the codemod demotes nothing. Per
-  § What counts as one evidence entry these are fixed by correcting the declared number upward
-  or splitting folded bullets, never by folding entries to match.
-- **`find_date` takes the FIRST ISO date in a bullet, which need not be the entry's date.** It
-  never invents one, but it can pick the wrong one — *"the 2026-01-01 release notes were wrong;
-  observed 2026-06-15"* migrates as `**2026-01-01**`. Condition 1 is entirely a function of these
-  dates, so a wrong date can create or destroy distinctness. Check dates on any entry whose prose
-  cites a date it did not happen on.
-- **In an archive, the whole document is the section — including the preamble.** A column-0
-  bullet before the first dated entry is treated as an entry, and if it carries a date it is
-  *rewritten* into one, permanently and idempotently. Measured: **12 of 65 archives** have such a
-  bullet, and for 10 it is correct — they are genuine legacy entries. The two to inspect before
-  migrating are `check-docs-before-theorizing.evidence.md` (ctx7 doc links) and
-  `stacked-pr-base-orphans-when-base-merges-first.evidence.md` (sub-bullets of a paragraph
-  entry).
-- **An outcome token outside the taxonomy blocks the gate** and is reported as
-  `N unknown outcome value(s)`. It is never silently dropped: a mistyped `succesful_recall` would
-  otherwise vanish, and that is the value that *declines* a cluster.
-- **An archive that parses zero entries fails LOUD; the body never stands in for it.** The index
-  reports `UNPARSED: the sibling .evidence.md exists but parsed 0 entries (body has N)`. Falling
-  back to the body was tried and reverted: the body is a "latest 2" excerpt, so it can report
-  `eligible` on two old `repeated_failure`s while the archive's newest entries are
-  `successful_recall` — the value that *declines* a cluster. A silent wrong pass is worse than a
-  loud stop, which is the whole of the rule two sections above.
+The invariant that remains load-bearing during promotion: one incident is one entry; distinct-date
+independence is enforced by the gate, never by folding the evidence inventory.

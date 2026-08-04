@@ -30,6 +30,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import build_index as B          # noqa: E402  (path must be set first)
 import migrate_evidence as M     # noqa: E402
+from instinct_record import InstinctFormatError, parse_file, parse_text  # noqa: E402
 
 DEFAULT_ROOT = M.DEFAULT_ROOT
 
@@ -53,11 +54,12 @@ def declared_count(root, p):
              if p.name.endswith(".evidence.md") else p)
     if not owner.exists():
         return None
-    m = M.FM.match(owner.read_text())
-    if not m:
+    try:
+        record = parse_file(owner)
+    except (OSError, InstinctFormatError):
         return None
-    v = B.field(m.group(1), "evidence_count")
-    return int(v) if v and v.isdigit() else None
+    value = record.values.get("evidence_count")
+    return value if isinstance(value, int) and value >= 0 else None
 
 
 def entries_after(text):
@@ -75,8 +77,11 @@ def entries_before(text, name):
     """
     if name.endswith(".evidence.md"):
         return B._total(B.evidence_stats(text, whole=True))
-    m = M.FM.match(text)
-    return B._total(B.evidence_stats(text[m.end():])) if m else 0
+    try:
+        record = parse_text(text)
+    except InstinctFormatError:
+        return 0
+    return B._total(B.evidence_stats(record.body)) if record.kind != "legacy" else 0
 
 
 def lint_file(root, p):

@@ -30,10 +30,10 @@ supported**. Defined behavior when the path is absent:
 | `python3` | prune's shortlist/retire/ruling, all of distill and format's scripts | command-not-found; buckets and the hook still work (pure bash) |
 | `git` | `export-package.sh` only | dies: "not a git repo — the export ships tracked files only" |
 | `gitleaks` | `pre-publish.sh` layer 2 | exit 2, fail-closed; `SKIP_GITLEAKS=1` downgrades deliberately and should be noted in release notes |
-| `grep`, `awk`, `sed`, `find` | throughout | POSIX-common flags only; developed against macOS/BSD grep and the ugrep wrapper, expected fine on GNU |
+| `grep`, `awk`, `sed`, `find` | throughout | developed against macOS/BSD + GNU userlands; uses a few widely-supported extensions (`grep --binary-files`, `find -maxdepth`, `find -delete`) that a strictly minimal POSIX userland lacks — that userland is not a target |
 
-Python: tested on 3.14. Older 3.x is untested, not unsupported — the scripts use nothing
-exotic, but no floor below 3.14 has been verified.
+Python: requires ≥ 3.9 (`str.removesuffix`, used in `shortlist.py` and `ruling.py`);
+tested on 3.14.
 
 ## Symlinks: install by copy
 

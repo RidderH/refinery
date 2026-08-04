@@ -23,6 +23,9 @@ echo "clean room: $ROOM"
 echo "package:    $PKG"
 echo
 
+MANIFEST_TOOL="$PKG/skills/instinct-prune/scripts/package_manifest.py"
+PACKAGE_MANIFEST="$PKG/package-manifest.json"
+
 # A HOME with absolutely nothing in it.
 export HOME="$ROOM/home"
 mkdir -p "$HOME"
@@ -30,10 +33,9 @@ mkdir -p "$HOME"
 
 # ---------------------------------------------------------------- install
 echo; echo "INSTALL (README steps, verbatim)"
-mkdir -p "$HOME/.claude/skills" "$HOME/.claude/hooks" "$HOME/.claude/rules"
-cp -R "$PKG"/skills/instinct-* "$HOME/.claude/skills/" 2>/dev/null
-cp "$PKG/hooks/surface-instincts.sh" "$HOME/.claude/hooks/" 2>/dev/null
-cp "$PKG/rules/instincts.md" "$HOME/.claude/rules/" 2>/dev/null
+# Mirrors README.md's manifest-driven install. The package root differs only
+# because this test receives a temporary export path instead of ~/refinery.
+python3 "$MANIFEST_TOOL" install "$PACKAGE_MANIFEST" "$PKG" "$HOME/.claude"
 mkdir -p "$HOME/.claude/homunculus/instincts/personal"
 
 n=$(find "$HOME/.claude/skills" -maxdepth 1 -name 'instinct-*' -type d | wc -l | tr -d ' ')
@@ -66,16 +68,18 @@ hook_out=$(bash "$HOME/.claude/hooks/surface-instincts.sh" 2>&1); hook_rc=$?
 # ---------------------------------------------------------------- tooling
 echo; echo "TOOLING SELFTESTS UNDER THE FRESH CONFIG"
 while IFS= read -r s; do
-  out=$(python3 "$s" --selftest 2>&1 | tail -1)
-  case "$out" in *PASS*) ok=1;; *) ok=0;; esac
-  chk "$(basename "$s") --selftest ($out)" "$ok"
+  out=$(python3 "$s" --selftest 2>&1); rc=$?
+  case "$out" in *PASS*) matched=1;; *) matched=0;; esac
+  ok=0; [ "$rc" -eq 0 ] && [ "$matched" -eq 1 ] && ok=1
+  chk "$(basename "$s") --selftest (rc=$rc, $(echo "$out" | tail -1))" "$ok"
 done < <(find "$HOME/.claude/skills" -name '*.py' -exec grep -l -- '--selftest' {} + | sort)
 
 bs="$HOME/.claude/skills/instinct-prune/scripts/instinct-buckets.sh"
 if [ -f "$bs" ]; then
-  out=$(bash "$bs" --selftest 2>&1 | tail -1)
-  case "$out" in *PASS*) ok=1;; *) ok=0;; esac
-  chk "instinct-buckets.sh --selftest ($out)" "$ok"
+  out=$(bash "$bs" --selftest 2>&1); rc=$?
+  case "$out" in *PASS*) matched=1;; *) matched=0;; esac
+  ok=0; [ "$rc" -eq 0 ] && [ "$matched" -eq 1 ] && ok=1
+  chk "instinct-buckets.sh --selftest (rc=$rc, $(echo "$out" | tail -1))" "$ok"
 fi
 
 # ---------------------------------------------------------------- empty corpus
@@ -160,10 +164,25 @@ print("  PASS  README settings snippet parses and has the right shape")
 PY
 [ $? -eq 0 ] || FAIL=$((FAIL+1))
 
+# ---------------------------------------------------------------- update
+echo; echo "UPDATE (README steps, verbatim — remove-then-reinstall)"
+# Plant a file that a hypothetical older package version shipped but the
+# current export does not. The documented update (rm -rf then reinstall)
+# must remove it; a bare re-run of the install cp lines would not, since
+# cp -R never deletes files absent from the source.
+obsolete="$HOME/.claude/skills/instinct-prune/obsolete-from-old-version.sh"
+echo '#!/bin/bash' > "$obsolete"
+[ -f "$obsolete" ]; chk "obsolete file planted before update" $((1 - $?))
+
+python3 "$MANIFEST_TOOL" update "$PACKAGE_MANIFEST" "$PKG" "$HOME/.claude"
+
+[ ! -f "$obsolete" ]; chk "update removes files deleted upstream (obsolete file gone)" $((1 - $?))
+[ -f "$HOME/.claude/homunculus/instincts/personal/a-first-lesson.md" ]
+chk "update leaves the corpus untouched (first lesson survives)" $((1 - $?))
+
 # ---------------------------------------------------------------- uninstall
 echo; echo "UNINSTALL (README steps, verbatim)"
-rm -rf "$HOME"/.claude/skills/instinct-*
-rm -f "$HOME/.claude/hooks/surface-instincts.sh" "$HOME/.claude/rules/instincts.md"
+python3 "$MANIFEST_TOOL" uninstall "$PACKAGE_MANIFEST" "$PKG" "$HOME/.claude"
 
 [ -z "$(find "$HOME/.claude/skills" -maxdepth 1 -name 'instinct-*' 2>/dev/null)" ]
 chk "all skills removed" $((1 - $?))

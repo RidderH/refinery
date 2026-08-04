@@ -22,6 +22,10 @@ import pathlib
 import re
 import sys
 
+FORMAT_SCRIPTS = pathlib.Path(__file__).resolve().parents[2] / "instinct-format" / "scripts"
+sys.path.insert(0, str(FORMAT_SCRIPTS))
+from instinct_record import InstinctFormatError, parse_file, parse_text  # noqa: E402
+
 DEFAULT_ROOT = pathlib.Path.home() / ".claude/homunculus/instincts/personal"
 
 FM = re.compile(r"\A---\n(.*?)\n---\n", re.S)
@@ -45,14 +49,12 @@ OUTCOMES = ("repeated_failure", "successful_recall", "confirmation", "correction
 
 
 def field(fm, name):
-    m = re.search(rf"^{name}:\s*(.*?)$", fm, re.M)
-    if not m:
+    """Compatibility adapter backed by the canonical frontmatter parser."""
+    try:
+        value = parse_text(f"---\n{fm}\n---\n").values.get(name)
+    except InstinctFormatError:
         return None
-    val = m.group(1).strip().strip('"')
-    tail = re.search(rf"^{name}:.*?\n((?:[ \t]+\S.*\n)*)", fm, re.M | re.S)
-    if tail:
-        val += " " + " ".join(l.strip().strip('"') for l in tail.group(1).splitlines())
-    return val.strip()
+    return None if value is None else str(value)
 
 
 def evidence_stats(body, whole=False):
@@ -119,12 +121,19 @@ def record(root, ident):
     p = pathlib.Path(root) / f"{ident}.md"
     if not p.exists():
         return {"id": ident, "missing": True}
-    t = p.read_text()
-    m = FM.match(t)
-    if not m:
+    try:
+        parsed = parse_file(p)
+    except (OSError, InstinctFormatError):
         return {"id": ident, "malformed": True}
-    fm, body = m.group(1), t[m.end():]
-    ec = field(fm, "evidence_count")
+    if parsed.kind == "legacy":
+        return {"id": ident, "malformed": True}
+    values, body = parsed.values, parsed.body
+    raw_ec = values.get("evidence_count")
+    ec = raw_ec if isinstance(raw_ec, int) and raw_ec >= 0 else 0
+
+    def text_value(name):
+        value = values.get(name)
+        return None if value is None else str(value)
     # The body carries only "latest 2" by format contract; the sibling archive carries the
     # COMPLETE history (`instinct-format/SKILL.md:184-187`, "The body is an excerpt; the
     # archive is the record"). The recurrence gate needs >=2
@@ -156,20 +165,20 @@ def record(root, ident):
     rf_distinct = len(set(st.pop("rf_dates")))
     return {
         "id": ident,
-        "domain": field(fm, "domain"),
-        "confidence": field(fm, "confidence"),
-        "evidence_count": int(ec) if ec and ec.isdigit() else 0,
-        "schema_version": field(fm, "schema_version"),
-        "created": field(fm, "created"),
-        "updated": field(fm, "updated"),
-        "promoted_to": field(fm, "promoted_to"),
-        "trigger": field(fm, "trigger"),
-        "action": field(fm, "action"),
+        "domain": text_value("domain"),
+        "confidence": text_value("confidence"),
+        "evidence_count": ec,
+        "schema_version": text_value("schema_version"),
+        "created": text_value("created"),
+        "updated": text_value("updated"),
+        "promoted_to": text_value("promoted_to"),
+        "trigger": text_value("trigger"),
+        "action": text_value("action"),
         "evidence": st,
         "distinct_dates": len(distinct),
         # Advisory only — GATES.md owns the decision. Reported so the model can see
         # WHY something is ineligible instead of inferring it.
-        "gate_hint": gate_hint(st, rf_distinct, int(ec) if ec and ec.isdigit() else None),
+        "gate_hint": gate_hint(st, rf_distinct, ec),
     }
 
 

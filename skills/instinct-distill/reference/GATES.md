@@ -73,39 +73,39 @@ file **permanently ineligible**, which is a claim about the lesson, not about yo
 Pick the better-supported of the two and say why in the entry. Reserve `` `?` `` for ambiguity
 that spans a counting and a non-counting value.
 
-### Real examples — all from this corpus
+### Worked examples (synthetic)
 
 `repeated_failure`
-> **2026-07-19** (`doc-blocker-hook-is-write-tool-scoped`) — *"a re-derivation of this
-> instinct's own headline … I described the block to the user as a 'hole' in the guard … then
+> **2026-06-14** (`example-lesson-cache-invalidation`) — *"a re-derivation of this instinct's
+> own headline … I described the stale response to the user as a 'flaky endpoint' … then
 > reasoned my way, over two turns, back to exactly what this file already stated at
 > confidence 0.9."*
 
-> **2026-07-27** (same file) — *"third recurrence of the same framing failure, and the first
+> **2026-06-21** (same file) — *"third recurrence of the same framing failure, and the first
 > with a diagnosed root cause."*
 
 `successful_recall`
-> **2026-07-29** (same file) — *"This file was grepped **before** forming an opinion (the
+> **2026-06-23** (same file) — *"This file was grepped **before** forming an opinion (the
 > instinct worked)."*
 
-> **2026-07-29**, later (same file) — *"Followed this file's step 1 — read the live `ALLOWED`
-> list in `doc-blocker.js` first — and wrote to the allowlisted directory on the next attempt;
-> no re-derivation, no heredoc."*
+> **2026-06-23**, later (same file) — *"Followed this file's step 1 — read the live TTL config
+> in `cache_config.py` first — and invalidated the correct key on the next attempt; no
+> re-derivation, no guesswork."*
 
 `confirmation`
-> **2026-07-19** (same file) — *"passive confirmation across a full session — no probe needed.
-> … All three allowlist claims behaved exactly as documented."*
+> **2026-06-14** (same file) — *"passive confirmation across a full session — no probe needed.
+> … All three cache-key claims behaved exactly as documented."*
 
-> **2026-07-19** (`authoring-and-testing-claude-code-hooks`) — *"third confirmation that the
-> `stop_hook_active` guard prevents the runaway."*
+> **2026-06-14** (`retry-backoff-must-be-jittered`) — *"third confirmation that the jitter
+> window prevents the thundering-herd retry storm."*
 
 `first_observation`
-> **2026-04-02** (`module-resolution-belongs-to-whatever-loads-the-file`, `created: 2026-04-02`)
-> — *"Beta_Site Phase 0b: three successive attempts to fix Leaflet SSR … Only the combination of
-> the last two worked."* The entry's own date **is** the file's `created` date; there was no
-> lesson to recall, confirm or repeat.
+> **2026-03-05** (`env-var-resolution-belongs-to-whatever-loads-the-file`, `created:
+> 2026-03-05`) — *"Acme_App Phase 2: three successive attempts to fix a Docker env-var
+> override … Only the combination of the last two worked."* The entry's own date **is** the
+> file's `created` date; there was no lesson to recall, confirm or repeat.
 
-> **2026-05-07** (`nextjs-module-evaluation-traps`, tagged *(from next-config-ts-loaded-as-cjs)*)
+> **2026-04-10** (`config-loading-traps`, tagged *(from env-precedence-in-multi-stage-builds)*)
 > — the founding observation of a source instinct that was later merged in. The merged document
 > is older than the entry; the *lesson the entry created* was not.
 
@@ -115,11 +115,11 @@ document the question is *"did the lesson this entry founded exist before it?"* 
 `*(from <source>)*` tag is the corpus telling you the answer is no.
 
 `correction`
-> **2026-07-06** (`doc-blocker-hook-is-write-tool-scoped`) — *"Corrected the project memory
-> `hooks-blokkeren-planbestanden`, which had wrongly implied `PLAN*.md` was allowlisted (it is
-> not)."*
+> **2026-06-30** (`example-lesson-cache-invalidation`) — *"Corrected the project memory
+> `caching-notes-for-acme-app`, which had wrongly implied `session:*` keys were exempt from the
+> TTL sweep (they are not)."*
 
-> **2026-07-29** (`green-guards-prove-nothing-until-you-make-them-red`) — the neutered emitter
+> **2026-07-02** (`guards-must-fail-on-bad-input-before-shipping`) — the neutered emitter
 > stayed green, which the lesson's own rule read as "assertion is dead"; a reachability probe
 > showed the branch was never entered. *"The probe was wrong, not the test."*
 

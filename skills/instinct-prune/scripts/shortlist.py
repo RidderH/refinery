@@ -104,6 +104,24 @@ def shortlist(rows, claimed):
     return out
 
 
+def ruling_base_for(root):
+    """The home base whose CORPUS_REL resolves to `root`, so a --root run
+    scopes standing rulings to the corpus under test instead of always the
+    live personal ledger (BUG 1: an unrelated test corpus was inheriting the
+    home ledger's suppressions). root=None means "default corpus" -> the
+    live ruling.BASE, unchanged. A non-standard-shaped root (retire.py's
+    root.parent.parent.parent != root) has no ledger we can validate subject
+    paths against -> None, meaning "suppress nothing" (ruling.py's own
+    fail-open direction), never a guess at the wrong ledger."""
+    if root is None:
+        return ruling.BASE
+    root_p = pathlib.Path(root).resolve()
+    base = root_p.parent.parent.parent
+    if base / ruling.CORPUS_REL != root_p:
+        return None
+    return base
+
+
 def main(argv):
     tsv_file = root = None
     args = list(argv)
@@ -127,8 +145,14 @@ def main(argv):
     picked = shortlist(rows, claimed)
     # Ruling ledger (ruling.py): subtract adjudicated candidates, VISIBLY —
     # no silent caps; an unreadable ledger subtracts nothing (fail-open).
-    rulings = ruling.load_rulings(ruling.BASE)
-    kept, suppressed = ruling.apply_rulings(picked, rulings, ruling.BASE)
+    # Scoped to the corpus being shortlisted (BUG 1) — a --root run must not
+    # inherit the live personal ledger's suppressions.
+    rbase = ruling_base_for(root)
+    if rbase is None:
+        print("shortlist: custom root: standing rulings not applied (no "
+              "ledger scoped to this corpus)", file=sys.stderr)
+    rulings = ruling.load_rulings(rbase) if rbase is not None else None
+    kept, suppressed = ruling.apply_rulings(picked, rulings, rbase or ruling.BASE)
     print(f"shortlist: {len(kept)} candidates from {len(rows)} files "
           f"({len(claimed)} claimed, invisible; "
           f"{len(suppressed)} suppressed by standing rulings)")
@@ -140,7 +164,7 @@ def main(argv):
     if defers:
         print("\nStanding DEFERs — promises to revisit, shown every run:")
         for r in defers:
-            state = "" if ruling.subjects_valid(r, ruling.BASE) \
+            state = "" if ruling.subjects_valid(r, rbase or ruling.BASE) \
                 else "  [subjects changed — re-adjudicate]"
             print(f"  {r['ruled']}  {r['id']} — {r['why']}{state}")
     print("\nCandidate flags, not verdicts. Phase C verifies each; rank 1 also "
@@ -229,6 +253,39 @@ def selftest():
         st = Store(pathlib.Path(tmp))
         check("selftest store starts unclaimed (fixture sanity)",
               st.claimed_ids() == set())
+
+    # BUG 1: --root must scope standing rulings to the corpus under test,
+    # not always the live personal ledger. Test ruling_base_for() directly —
+    # can't touch the real home ledger from a selftest.
+    check("ruling_base_for(None) is the live ruling.BASE (default unchanged)",
+          ruling_base_for(None) == ruling.BASE)
+    with tempfile.TemporaryDirectory() as tmp:
+        std_root = pathlib.Path(tmp) / "homehome" / ruling.CORPUS_REL
+        std_root.mkdir(parents=True)
+        check("standard-shaped --root resolves to its own base",
+              ruling_base_for(str(std_root)) == (pathlib.Path(tmp) / "homehome").resolve())
+        weird_root = pathlib.Path(tmp) / "just_a_dir"
+        weird_root.mkdir()
+        check("non-standard-shaped --root -> None (suppress nothing, BUG 1 RED)",
+              ruling_base_for(str(weird_root)) is None)
+
+    # end-to-end probe: a --root corpus with no ledger must not report any
+    # candidate suppressed, regardless of what the live personal ledger holds.
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = pathlib.Path(tmp) / "home2" / ruling.CORPUS_REL
+        corpus.mkdir(parents=True)
+        tsv_path = pathlib.Path(tmp) / "in.tsv"
+        tsv_path.write_text(tsv(("dead.md", "30", "0.5", "1", "PARTIAL", "-", "ALL_DEAD")))
+        import subprocess
+        proc = subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).resolve()),
+             "--tsv-file", str(tsv_path), "--root", str(corpus)],
+            capture_output=True, text=True)
+        check("--root end-to-end: exits 0", proc.returncode == 0)
+        check("--root end-to-end: 0 suppressed by standing rulings",
+              "0 suppressed by standing rulings" in proc.stdout)
+        check("--root end-to-end: candidate still present",
+              "dead.md" in proc.stdout)
 
     print("SELFTEST:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

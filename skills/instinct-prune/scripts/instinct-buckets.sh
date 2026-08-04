@@ -15,6 +15,12 @@ DIR="$HOME/.claude/homunculus/instincts/personal"
 RULES="$HOME/.claude/rules"
 SKILLS="$HOME/.claude/skills"
 TSV=${1:-}
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+INSTINCT_PARSER="$SCRIPT_DIR/../../instinct-format/scripts/instinct_record.py"
+[ -f "$INSTINCT_PARSER" ] || {
+  echo "FATAL: canonical instinct parser not found: $INSTINCT_PARSER" >&2
+  exit 3
+}
 
 cd "$DIR" || exit 1
 
@@ -43,15 +49,23 @@ cd "$DIR" || exit 1
 # rather than measured beforehand. What is measurable, and what this now
 # reports, is conversion progress: does the file meet the new spec?
 #
-# A converted file has an `action:` line in frontmatter (the skim tier) and a
-# `## Symptom` heading. Both are mechanical, unambiguous checks.
+# A converted file has an `action:` line in FRONTMATTER (the skim tier) and a
+# `## Symptom` heading in the BODY. Both are mechanical, unambiguous checks —
+# but v2 greped the WHOLE FILE for both, so legacy prose whose body happens to
+# contain a literal `action:` line and a `## Symptom` line impersonated a
+# converted lesson (and could then rank as a RULE_DUP retirement candidate on
+# the strength of a coincidental string match). Scope each probe to the tier
+# the spec actually means: `action:` via the existing frontmatter() extractor,
+# `## Symptom` via body() below (frontmatter lines can't start with `##` in
+# practice, but the body scope is applied anyway so the invariant holds by
+# construction, not by luck).
 findable() {
-  local has_action has_symptom
-  grep -q '^action:' "$1" && has_action=1 || has_action=0
-  grep -q '^## Symptom' "$1" && has_symptom=1 || has_symptom=0
-  if [ "$has_action" -eq 1 ] && [ "$has_symptom" -eq 1 ]; then echo "CONVERTED"
-  elif [ "$has_action" -eq 1 ] || [ "$has_symptom" -eq 1 ]; then echo "PARTIAL"
-  else echo "OLD_FORMAT"; fi
+  local verdict
+  verdict=$(python3 "$INSTINCT_PARSER" --gate0 "$1" 2>/dev/null) || {
+    echo "FORMAT_INVALID"
+    return
+  }
+  echo "$verdict"
 }
 
 # ---------------------------------------------------------------- gate 1
@@ -209,51 +223,15 @@ for proj_name in $ABSENT_NAMES; do
   [ "$found" -eq 0 ] && ABSENT_RE="${ABSENT_RE:+$ABSENT_RE|}$proj_name"
 done
 
-# Frontmatter only: the leading `---` block. A body line starting with `cites:`
-# must not be mistaken for the field, and prose is explicitly out of scope for
-# the declared branch.
-frontmatter() { awk 'NR==1 && $0=="---"{fm=1;next} fm && $0=="---"{exit} fm' "$1"; }
-
-has_cites() { frontmatter "$1" | grep -q '^cites:'; }
-
-# Prints one declared entry per line; prints nothing for `cites: []`. The
-# documented form is the block sequence (`cites:` then `  - "path"`), but an
-# inline non-empty list is PARSED rather than ignored: letting it fall through
-# to zero entries would report CITES_NONE — granting the permanent
-# path-independent exemption to a file that tried to declare paths. A
-# malformed-but-parseable declaration must not fail into the exemption class.
-# Quote stripping is anchored to the ends only: a path legitimately containing
-# an apostrophe must survive (the first version gsub'd every single quote).
-cites_decl() {
-  frontmatter "$1" | awk '
-    function clean(s) {
-      sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s)
-      sub(/^"/, "", s); sub(/"$/, "", s)
-      sub(/^\047/, "", s); sub(/\047$/, "", s)
-      return s
-    }
-    /^cites:[[:space:]]*\[[[:space:]]*\][[:space:]]*$/ { exit }
-    /^cites:[[:space:]]*\[/ {
-      line = $0
-      sub(/^cites:[[:space:]]*\[/, "", line)
-      sub(/\][[:space:]]*$/, "", line)
-      n = split(line, parts, ",")
-      for (i = 1; i <= n; i++) { p = clean(parts[i]); if (p != "") print p }
-      exit
-    }
-    /^cites:/ { inc=1; next }
-    inc && /^[[:space:]]+-[[:space:]]/ {
-      line = $0
-      sub(/^[[:space:]]+-[[:space:]]+/, "", line)
-      print clean(line)
-      next
-    }
-    inc && /^[^[:space:]]/ { inc = 0 }
-  '
-}
-
 repo_true() {
-  if has_cites "$1"; then repo_true_declared "$1"; else repo_true_inferred "$1"; fi
+  local state
+  state=$(python3 "$INSTINCT_PARSER" --cites-state "$1" 2>/dev/null) || state="INVALID"
+  case "$state" in
+    ABSENT) repo_true_inferred "$1" ;;
+    EMPTY) echo "CITES_NONE" ;;
+    LIST) repo_true_declared "$1" ;;
+    *) echo "CITES_INVALID" ;;
+  esac
 }
 
 # DECLARED branch. A dead entry here is a strong signal, not an artifact: a human
@@ -267,8 +245,14 @@ repo_true() {
 # spuriously resolve. The inferred branch keeps it for body-derived paths.
 repo_true_declared() {
   local paths dead=0 total=0 p r found
-  paths=$(cites_decl "$1")
-  [ -z "$paths" ] && { echo "CITES_NONE"; return; }
+  # CITES_INVALID is loud and deliberately un-ranked: shortlist.py's
+  # classify() only ranks the known labels (CITES_OK/NONE/SOME_DEAD/ALL_DEAD/
+  # UNVERIFIABLE), so an unrecognized label safely falls out of ranking rather
+  # than needing a shortlist.py change here.
+  paths=$(python3 "$INSTINCT_PARSER" --cites "$1" 2>/dev/null) || {
+    echo "CITES_INVALID"
+    return
+  }
   while read -r p; do
     [ -z "$p" ] && continue
     total=$((total+1))
@@ -344,7 +328,13 @@ if [ "$TSV" = "--selftest" ]; then
   LIVE_Q="homunculus/instincts/personal"
   DEAD_Q="homunculus/instincts/personal/no-such-instinct-ever.md"
   ST_FAIL=0
-  fixture() { printf '%s\n' "$2" > "$ST/$1.md"; }
+  fixture() {
+    # Keep the canonical parser's id/filename invariant true in fixtures whose
+    # behavior is about another gate. A fixture may still override the id
+    # deliberately after creation when testing that invariant itself.
+    local content=${2/"id: x"/"id: $1"}
+    printf '%s\n' "$content" > "$ST/$1.md"
+  }
   expect() {
     local got; got=$(repo_true "$ST/$1.md")
     if [ "$got" = "$2" ]; then echo "  PASS  $1 -> $2"
@@ -427,6 +417,16 @@ cites: [\"$LIVE_Q\", \"$DEAD_Q\"]
 body"
   expect cites-inline SOME_DEAD
 
+  # An opening bracket without a closing bracket is not an empty list. The
+  # inline branch used to strip the opener, emit no entries, and grant the
+  # deliberate path-independent exemption.
+  fixture cites-inline-unterminated "---
+id: x
+cites: [
+---
+body"
+  expect cites-inline-unterminated CITES_INVALID
+
   # Entry 9 must still be checked: the ~8 cap is an authoring rule, and a
   # truncating scanner would leave a dead load-bearing path at position 9
   # silently unchecked. Only the 9th entry here is dead.
@@ -446,8 +446,108 @@ cites:
 body"
   expect cites-ninth-dead SOME_DEAD
 
-  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (10 checks)"; exit 0
-  else echo "selftest: FAIL ($ST_FAIL of 10)"; exit 1; fi
+  # ---- gate 0 (findable/CONVERTED) ------------------------------------
+  # Not exercised above — repo_true never touches findable(). Small helper,
+  # same fixture/expect shape.
+  expect_g0() {
+    local got; got=$(findable "$ST/$1.md")
+    if [ "$got" = "$2" ]; then echo "  PASS  $1 -> $2"
+    else echo "  FAIL  $1 -> got $got, want $2"; ST_FAIL=$((ST_FAIL+1)); fi
+  }
+
+  # RED-first: the bug scanned the WHOLE FILE for `^action:` and
+  # `^## Symptom`, so legacy prose with no frontmatter at all — but a body
+  # that happens to contain both literal lines — impersonated a converted
+  # lesson. `action:` in the body must NOT count; `## Symptom` in the body
+  # DOES count (there's no frontmatter to exclude it from), so this is
+  # PARTIAL, not CONVERTED.
+  fixture g0-impersonator "action: do the thing
+## Symptom
+some prose that happens to contain both literal lines"
+  expect_g0 g0-impersonator PARTIAL
+
+  # Positive control: action: in frontmatter + ## Symptom in body is a
+  # genuinely converted lesson.
+  fixture g0-converted "---
+id: x
+action: do the thing
+---
+## Symptom
+real body"
+  expect_g0 g0-converted CONVERTED
+
+  # ---- gate 2 cites: shape validation (CITES_INVALID) ------------------
+  # RED-first: before this fix, a scalar `cites:` value parsed to zero
+  # entries via the old code's blanket `/^cites:/ { inc=1; next }` (which
+  # then never found any `  - ` continuation lines) — reported CITES_NONE,
+  # silently granting the permanent path-independence exemption to a file
+  # that never wrote a valid list.
+  fixture cites-scalar "---
+id: x
+cites: this-is-not-a-list
+---
+body"
+  expect cites-scalar CITES_INVALID
+
+  # RED-first: a duplicate cites: key. The old parser matched only the
+  # first occurrence and never noticed the second.
+  fixture cites-duplicate "---
+id: x
+cites:
+  - \"$LIVE_Q\"
+cites:
+  - \"$DEAD_Q\"
+---
+body"
+  expect cites-duplicate CITES_INVALID
+
+  # RED-first: `cites: [] # note` is valid YAML (empty list, trailing
+  # comment) but the old empty-list regex required end-of-line right after
+  # `]`, so this fell through into the non-empty inline branch and emitted
+  # the garbage entry `] # note` — a fabricated ALL_DEAD.
+  fixture cites-empty-comment "---
+id: x
+cites: [] # note
+---
+Path-independent lesson."
+  expect cites-empty-comment CITES_NONE
+
+  # Inline non-empty list WITH a trailing comment must still parse both
+  # entries correctly (not swallow $DEAD_Q into the comment, not fabricate
+  # a third entry from the comment text).
+  fixture cites-inline-comment "---
+id: x
+cites: [\"$LIVE_Q\", \"$DEAD_Q\"] # trailing note
+---
+body"
+  expect cites-inline-comment SOME_DEAD
+
+  # RED-first: a trailing comment on the block-form KEY line itself
+  # (`cites:  # note`) is valid YAML — the comment attaches to the key, the
+  # block-sequence entries follow on their own lines — but the first version
+  # of the `__INVALID__` catch-all required the key line to be blank
+  # (`/^cites:[[:space:]]*$/`), so a comment there fell through to the
+  # scalar catch-all and misreported CITES_INVALID on a well-formed
+  # declaration.
+  fixture cites-key-comment "---
+id: x
+cites:  # a trailing comment on the key line
+  - \"$LIVE_Q\"
+---
+body"
+  expect cites-key-comment CITES_OK
+
+  # Guards the catch-all isn't neutered by the comment allowance above: a
+  # genuine scalar value must still be CITES_INVALID.
+  fixture cites-scalar-still-invalid "---
+id: x
+cites: this-is-not-a-list
+---
+body"
+  expect cites-scalar-still-invalid CITES_INVALID
+
+  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (19 checks)"; exit 0
+  else echo "selftest: FAIL ($ST_FAIL of 19)"; exit 1; fi
 fi
 
 # ---------------------------------------------------------------- report
@@ -504,6 +604,6 @@ echo "GATE 1 — promoted (already covered by an always-on rule?)"; col 6
 echo
 echo "GATE 2 — repo-true (do its cited paths still exist?)"; col 7
 echo
-echo "FORMAT — over the 30-line cap: $LONG of $TOTAL"
+echo "SIZE — files longer than 30 lines (telemetry; the format sets ~30 as a floor, not a cap): $LONG of $TOTAL"
 echo
 echo "Gates are CANDIDATE FLAGS, not verdicts. Calibrate against --tsv before moving anything."
