@@ -1,0 +1,6 @@
+interface:
+  display_name: "Instinct Format"
+  short_description: "Create and validate Refinery lesson records"
+  default_prompt: "Use $instinct-format to create or validate this Refinery lesson record."
+policy:
+  allow_implicit_invocation: true

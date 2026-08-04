@@ -1,0 +1,6 @@
+interface:
+  display_name: "Instinct Distill"
+  short_description: "Promote recurring lessons into durable guidance"
+  default_prompt: "Use $instinct-distill to find promotion candidates, but make no changes without my explicit approval."
+policy:
+  allow_implicit_invocation: false

@@ -117,6 +117,51 @@ def _validate_metadata(frontmatter, directory_name):
             raise ValueError(f"{key} must be a boolean")
 
 
+def _validate_openai_metadata(data, skill_name, manual_only):
+    if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
+        raise ValueError("metadata must be a mapping with string keys")
+    unsupported = sorted(set(data) - {"interface", "policy", "dependencies"})
+    if unsupported:
+        raise ValueError(f"unsupported top-level key: {unsupported[0]}")
+
+    interface = data.get("interface")
+    if not isinstance(interface, dict):
+        raise ValueError("interface must be a mapping")
+    required_interface = {"display_name", "short_description", "default_prompt"}
+    missing = sorted(required_interface - set(interface))
+    if missing:
+        raise ValueError(f"interface is missing: {missing[0]}")
+    unsupported_interface = sorted(
+        set(interface)
+        - {
+            "display_name",
+            "short_description",
+            "icon_small",
+            "icon_large",
+            "brand_color",
+            "default_prompt",
+        }
+    )
+    if unsupported_interface:
+        raise ValueError(f"unsupported interface key: {unsupported_interface[0]}")
+    for key in required_interface:
+        if not isinstance(interface[key], str) or not interface[key].strip():
+            raise ValueError(f"interface.{key} must be a non-empty string")
+    if f"${skill_name}" not in interface["default_prompt"]:
+        raise ValueError(f"interface.default_prompt must mention ${skill_name}")
+
+    policy = data.get("policy")
+    if not isinstance(policy, dict) or set(policy) != {"allow_implicit_invocation"}:
+        raise ValueError("policy must contain exactly allow_implicit_invocation")
+    implicit = policy["allow_implicit_invocation"]
+    if not isinstance(implicit, bool):
+        raise ValueError("policy.allow_implicit_invocation must be a boolean")
+    if manual_only and implicit:
+        raise ValueError(
+            "manual-only Claude skill must set allow_implicit_invocation to false"
+        )
+
+
 def main(args):
     if len(args) != 1:
         print("usage: validate_skills.py PACKAGE_ROOT", file=sys.stderr)
@@ -134,6 +179,7 @@ def main(args):
         print(f"no Refinery skills found under {root}", file=sys.stderr)
         return 2
 
+    openai_enabled = any((path / "agents/openai.yaml").is_file() for path in skill_dirs)
     failed = False
     for skill_dir in skill_dirs:
         path = skill_dir / "SKILL.md"
@@ -150,9 +196,32 @@ def main(args):
         except yaml.YAMLError as exc:
             print(f"{relative}: invalid YAML: {exc}", file=sys.stderr)
             failed = True
+            continue
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"{relative}: invalid frontmatter: {exc}", file=sys.stderr)
             failed = True
+            continue
+
+        if openai_enabled:
+            openai_path = skill_dir / "agents/openai.yaml"
+            openai_relative = openai_path.relative_to(root)
+            if not openai_path.is_file():
+                print(f"{openai_relative}: missing", file=sys.stderr)
+                failed = True
+                continue
+            try:
+                openai_data = _safe_load_unique(openai_path.read_text())
+                _validate_openai_metadata(
+                    openai_data,
+                    path.parent.name,
+                    frontmatter.get("disable-model-invocation") is True,
+                )
+            except yaml.YAMLError as exc:
+                print(f"{openai_relative}: invalid YAML: {exc}", file=sys.stderr)
+                failed = True
+            except (OSError, UnicodeError, ValueError) as exc:
+                print(f"{openai_relative}: invalid metadata: {exc}", file=sys.stderr)
+                failed = True
 
     if failed:
         return 1

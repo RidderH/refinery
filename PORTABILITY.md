@@ -35,12 +35,18 @@ supported**. Defined behavior when the path is absent:
 Python: requires ≥ 3.9 (`str.removesuffix`, used in `shortlist.py` and `ruling.py`);
 tested on 3.14.
 
-## Symlinks: install by copy
+## Symlinks: supported for skills, not Claude integration files
 
-Some `grep -r` implementations do not descend into symlinked directories, so a skill
-installed as a symlink can be invisible to recursive scans (this exact failure is in the
-corpus that built this package). The README's install is `cp -R` for that reason. Symlink
-installs are unsupported.
+The four canonical skill directories may be symlinked into `~/.agents/skills` or a
+project's `.agents/skills`. Agent discovery resolves each named skill directly, and bundled
+commands resolve from the directory containing `SKILL.md`; they do not depend on a recursive
+scan finding the symlink.
+
+Claude hooks and rules still install by copy through `package_manifest.py`. Some `grep -r`
+implementations do not descend into symlinked directories, and treating arbitrary hook/rule
+destinations as links would weaken the package installer's ownership boundary. The dedicated
+`link_agent_skills.py` therefore manages only `skills/instinct-*`, refuses conflicts before
+creating any link, and removes only links that point to the selected checkout.
 
 ## Whitespace in paths
 

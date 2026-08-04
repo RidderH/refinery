@@ -31,7 +31,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXED_PATHS=("hooks/surface-instincts.sh" "rules/instincts.md")
 REQUIRED_PACKAGE_FILES=(".claude-plugin/plugin.json" ".gitignore"
                         "CONTENT-SAFETY.md" "PORTABILITY.md" "README.md"
-                        "package-manifest.json")
+                        "package-manifest.json" "skills.sh.json")
 
 die() { echo "FATAL: $*" >&2; exit 2; }
 
@@ -348,6 +348,7 @@ publish() {  # $1 = dest
     if [ "$(uname)" = "Darwin" ]; then hist_perms=$(stat -f '%Lp' "$hist_conf"); else hist_perms=$(stat -c '%a' "$hist_conf"); fi
     case "$hist_perms" in *[2367]) die "$hist_conf is world-writable ($hist_perms) — refusing to source it for the history scan";; esac
     local DENY_NAMES="" ALLOW_IDENTIFIERS=""
+    local ALLOW_PUBLIC_NAMES="${ALLOW_PUBLIC_NAMES:-}"
     # shellcheck disable=SC1090
     . "$hist_conf"
     [ -n "${DENY_NAMES// /}" ] || die "DENY_NAMES empty in $hist_conf — an empty denylist certifies nothing"
@@ -364,6 +365,11 @@ publish() {  # $1 = dest
     # and the message, never author/committer/date/hash.
     local hist_name hist_hits
     for hist_name in $DENY_NAMES; do
+      local hist_public=0 public_name
+      for public_name in $ALLOW_PUBLIC_NAMES; do
+        [ "$hist_name" = "$public_name" ] && { hist_public=1; break; }
+      done
+      [ "$hist_public" -eq 1 ] && continue
       hist_hits=$(git -C "$history_root" log --all -p --format=%B 2>/dev/null | grep -Fw -- "$hist_name")
       [ -z "$hist_hits" ] || die "DESTINATION HISTORY at $history_root contains denylisted name [$hist_name] — a clean stage does not certify the repo; history surgery (filter-repo/rebase) is needed before pushing"
     done
@@ -382,7 +388,7 @@ publish() {  # $1 = dest
       [ "$hist_allowed" -eq 1 ] \
         || die "DESTINATION HISTORY at $history_root contains private identifier [$hist_ident] — history surgery is needed before pushing"
     done < <(git -C "$history_root" log --all -p --format=%B 2>/dev/null \
-      | grep -Eo '([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|/(Users|home)/[A-Za-z0-9._-]+(/[A-Za-z0-9._/-]+)?)' \
+      | grep -Eo '([A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|/(Users|home)/[A-Za-z0-9._-]+(/[A-Za-z0-9._/-]+)?)' \
       | sort -u)
   fi
 
@@ -419,6 +425,9 @@ for item in data["managed"]:
 installer = root / "skills/instinct-prune/scripts/package_manifest.py"
 if not installer.is_file():
     raise SystemExit(f"documented manifest installer is missing: {installer.relative_to(root)}")
+linker = root / "skills/instinct-prune/scripts/link_agent_skills.py"
+if not linker.is_file():
+    raise SystemExit(f"documented agent skill linker is missing: {linker.relative_to(root)}")
 
 def covered(relative, item):
     source = item["source"]
@@ -436,15 +445,18 @@ for path in sorted(p for p in root.rglob("*") if p.is_file()):
     if not any(covered(relative, item) for item in entries):
         raise SystemExit(f"staged file is undeclared by package manifest: {relative}")
 readme = (root / "README.md").read_text()
+lines = readme.splitlines()
 for action in ("install", "update", "uninstall"):
-    if not any("package_manifest.py" in line and action in line
-               for line in readme.splitlines()):
+    if not any("package_manifest.py" in line and action in line for line in lines):
         # The documented command wraps after the script name, so also accept
         # an action on the immediately following line.
-        lines = readme.splitlines()
         if not any("package_manifest.py" in lines[i] and action in lines[i + 1]
                    for i in range(len(lines) - 1)):
             raise SystemExit(f"README does not document manifest action: {action}")
+for action in ("install", "uninstall"):
+    if not any("link_agent_skills.py" in lines[i] and action in lines[i + 1]
+               for i in range(len(lines) - 1)):
+        raise SystemExit(f"README does not document agent linker action: {action}")
 PY
 }
 
@@ -458,12 +470,18 @@ selftest() {
     mkdir -p "$pkg/.claude-plugin" "$pkg/evals" \
       "$repo/skills/instinct-prune/scripts"
     echo 'print("fixture installer")' > "$repo/skills/instinct-prune/scripts/package_manifest.py"
+    echo 'print("fixture linker")' > "$repo/skills/instinct-prune/scripts/link_agent_skills.py"
     echo '{"name":"fixture"}' > "$pkg/.claude-plugin/plugin.json"
     echo "fixture ignores" > "$pkg/.gitignore"
     echo "fixture content safety" > "$pkg/CONTENT-SAFETY.md"
     echo "fixture portability" > "$pkg/PORTABILITY.md"
+    echo '{"$schema":"https://skills.sh/schemas/skills.sh.schema.json"}' > "$pkg/skills.sh.json"
     echo '{"fixture":true}' > "$pkg/evals/privacy-gate-benchmark.json"
     printf '%s\n' \
+      'link_agent_skills.py' \
+      '  install fixture' \
+      'link_agent_skills.py' \
+      '  uninstall fixture' \
       'package_manifest.py install' \
       'package_manifest.py update' \
       'package_manifest.py uninstall' > "$pkg/README.md"
@@ -476,6 +494,7 @@ selftest() {
  {"source":".gitignore","destination":".gitignore","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"CONTENT-SAFETY.md","destination":"CONTENT-SAFETY.md","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"PORTABILITY.md","destination":"PORTABILITY.md","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
+ {"source":"skills.sh.json","destination":"skills.sh.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"README.md","destination":"README.md","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"package-manifest.json","destination":"package-manifest.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false},
  {"source":"evals/privacy-gate-benchmark.json","destination":"evals/privacy-gate-benchmark.json","type":"metadata","mode":"preserve","ownership":"package","replace":"replace","install":false}
@@ -801,6 +820,23 @@ JSON
            publish "$histdest3" 2>&1); hp3rc=$?
   [ "$hp3rc" -eq 2 ] && echo "$hp3out" | grep -q "DESTINATION HISTORY"
   chk "deny name in a commit MESSAGE (not diff, not author) still trips the gate" $((1 - $?))
+
+  # An explicitly public package identifier may intentionally occur in
+  # history even when a broad local denylist includes it. The exception is
+  # exact; pre-publish.sh separately proves another deny token still trips.
+  local histdest4="$tmp/histdest4"; mkdir -p "$histdest4"
+  git -C "$histdest4" init -q 2>/dev/null
+  printf '%s\n' '@dataclasses.dataclass' 'class PublicRecord: pass' > "$histdest4/x.py"
+  git -C "$histdest4" add -Af 2>/dev/null
+  git -C "$histdest4" -c user.name=t -c user.email=t@t commit -q -m "PublicOwner_4k release" 2>/dev/null
+  printf 'DENY_NAMES="PublicOwner_4k StillPrivate_8m"\n' > "$tmp/histconf4"; chmod 600 "$tmp/histconf4"
+
+  local hp4out hp4rc
+  hp4out=$(SRC="$histsrc" PACKAGE_DIR="$histsrc/docs/refinery" \
+           LOCAL_PROJECTS_CONF="$tmp/histconf4" ALLOW_PUBLIC_NAMES="PublicOwner_4k" \
+           SKIP_GITLEAKS=1 publish "$histdest4" 2>&1); hp4rc=$?
+  [ "$hp4rc" -eq 0 ]
+  chk "explicit public-name exception covers destination history" $((1 - $?))
 
   # ==========================================================================
   # BUG D: successful export leaves no unbound-variable trap output and no

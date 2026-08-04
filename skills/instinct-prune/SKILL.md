@@ -21,6 +21,11 @@ citations and advances the shared watermark.
 The authoritative spec is `docs/superpowers/plans/2026-07-30-instinct-prune-spec-draft.md`
 (§6b settled in full). This file is the run procedure, not the reasoning.
 
+Resolve `SKILL_DIR` to the absolute directory containing this `SKILL.md` before running a
+bundled command. Do not assume the current working directory or a particular agent's install
+root; Refinery may be linked from `.agents/skills`, copied into `.claude/skills`, or loaded
+directly from a checkout.
+
 ---
 
 ## The run
@@ -32,8 +37,8 @@ A bucket (read-only) → B shortlist (read-only) → C verify (human, per candid
 ### Phase A — bucket
 
 ```bash
-bash ~/.claude/skills/instinct-prune/scripts/instinct-buckets.sh          # summary
-bash ~/.claude/skills/instinct-prune/scripts/instinct-buckets.sh --tsv    # machine-readable, input to Phase B
+bash "$SKILL_DIR/scripts/instinct-buckets.sh"          # summary
+bash "$SKILL_DIR/scripts/instinct-buckets.sh" --tsv    # machine-readable, input to Phase B
 ```
 
 Read-only; writes nothing, moves nothing. Three gates per file: 0 FORMAT (converted to
@@ -47,7 +52,7 @@ the dead `build_token_index` stub was deleted in the same move.
 ### Phase B — shortlist
 
 ```bash
-bash ~/.claude/skills/instinct-prune/scripts/instinct-buckets.sh --tsv | python3 ~/.claude/skills/instinct-prune/scripts/shortlist.py
+bash "$SKILL_DIR/scripts/instinct-buckets.sh" --tsv | python3 "$SKILL_DIR/scripts/shortlist.py"
 ```
 
 Ranked worklist, stated reason per row; touches no file. Ranking: **1** RULE_DUP+CONVERTED,
@@ -93,7 +98,7 @@ Per candidate:
    coverage insufficient; DEFER = blocked on a named condition):
 
    ```bash
-   python3 ~/.claude/skills/instinct-prune/scripts/ruling.py <id> --verdict DROP \
+   python3 "$SKILL_DIR/scripts/ruling.py" <id> --verdict DROP \
      --rank <n> --gate1 <flag> --why "<challengeable ruling>" [--covering <bare stem>]
    ```
 
@@ -142,15 +147,15 @@ own.
 ### Phase D — retire
 
 ```bash
-python3 ~/.claude/skills/instinct-prune/scripts/retire.py <id> --successor <rule> \
+python3 "$SKILL_DIR/scripts/retire.py" <id> --successor <rule> \
   --why "<ruling>" --write-plan /tmp/<id>-retirement.json
-python3 ~/.claude/skills/instinct-prune/scripts/retire.py <id> --no-successor \
+python3 "$SKILL_DIR/scripts/retire.py" <id> --no-successor \
   --why "<ruling>" --write-plan /tmp/<id>-retirement.json
 # review the JSON, its exact effects, precondition hashes, recovery path, and plan_hash
-python3 ~/.claude/skills/instinct-prune/scripts/retire.py \
+python3 "$SKILL_DIR/scripts/retire.py" \
   --apply-plan /tmp/<id>-retirement.json --apply
-python3 ~/.claude/skills/instinct-prune/scripts/retire.py --resume <cluster_id> --apply     # after a crash
-python3 ~/.claude/skills/instinct-prune/scripts/retire.py --rollback <cluster_id> --apply   # undo non-terminal
+python3 "$SKILL_DIR/scripts/retire.py" --resume <cluster_id> --apply     # after a crash
+python3 "$SKILL_DIR/scripts/retire.py" --rollback <cluster_id> --apply   # undo non-terminal
 ```
 
 `--successor` takes the **bare rule stem or skill dir name** (`agents`, not
@@ -176,7 +181,7 @@ there is no delete path (spec §0.2).
 Gate after each applied retirement:
 
 ```bash
-python3 ~/.claude/skills/instinct-format/scripts/dangling_links.py
+python3 "$SKILL_DIR/../instinct-format/scripts/dangling_links.py"
 ```
 
 A `--no-successor` retiree must land in the **INTENT bucket** (declared no-successor), not

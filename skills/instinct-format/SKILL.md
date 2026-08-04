@@ -8,6 +8,10 @@ description: Define and validate the instinct file contract when creating, conve
 The contract for every file in `~/.claude/homunculus/instincts/personal/`. `/instinct-analyze`
 and the conversion agents both read this, so the format stays identical across them.
 
+Resolve `SKILL_DIR` to the absolute directory containing this `SKILL.md` before running a
+bundled command. Do not assume the current working directory or a particular agent's install
+root.
+
 Working on an existing file? Route by size first:
 
 - **Under ~35 lines** → [`MERGING.md`](MERGING.md). Below this format's floor, a file is a
@@ -256,5 +260,5 @@ Full history. The lesson lives in `<id>.md`; this file exists so the pattern
 Validate completion with:
 
 ```bash
-python3 scripts/instinct_record.py --check <id>.md
+python3 "$SKILL_DIR/scripts/instinct_record.py" --check <id>.md
 ```
