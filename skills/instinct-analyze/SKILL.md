@@ -101,6 +101,12 @@ State the gate result explicitly per candidate. A candidate failing any gate is 
 | `WORKFLOW` | the user's preferences, git habits, process | (a) (d) — skip (b) unless a config file can confirm it |
 | `HARNESS` | Claude Code itself — hooks, permissions, classifier denials, settings.json, skills vs commands vs workflows, tool quirks | (a) (b) (d) — see below |
 
+The class is a **primary routing label, not an exclusive type**. Apply checks based on every
+claim the candidate makes. In particular, any claim about a library, framework, SDK, API, or
+CLI requires check (c), even when its primary class is `HARNESS`, `REPO`, or `WORKFLOW`. For
+example, a Codex hook observation is primarily `HARNESS`, but a claim about what the Codex CLI
+supports still requires current Codex documentation.
+
 `HARNESS` claims are **verifiable, and must be verified** — never wave them through as "just how the tool behaves". They are testable more directly than most code claims:
 - Extract the hook's command out of `settings.json` and pipe a synthetic payload into it; assert the exit code and output for both a should-block and a should-pass input
 - Read the matcher and the allowlist regex directly rather than inferring policy from one rejection message
@@ -114,16 +120,45 @@ Record the probe command in `reality_citation`. A `HARNESS` candidate with no pr
 
 This framing is deliberate: an agent asked to "verify" a lesson from its own session will find support for it. With no cap on saves, refutation is the only thing keeping the corpus from growing every session.
 
+**Bound the verification.** A verifier stops as soon as every applicable check has a definite
+outcome; it does not keep searching for stronger support. One duplicate sweep, one focused
+reality probe, and the required documentation lookup are normally enough. If a tool call
+stalls, the same lookup fails repeatedly, or a required fact cannot be established, return
+`UNVERIFIED` with the evidence gathered so far. Do not wait indefinitely or broaden into an
+open-ended research task.
+
 Give each agent the candidate's claim, its class, the relevant file paths, and the checks below. Require the verdict back as structured output against this shape:
 
 ```
 { id, class, verdict: SAVE|DROP|BUMP|MERGE|ELSEWHERE|UNVERIFIED,
-  dup: NEW|BUMP <id>|MERGE <id>,
-  reality_citation: "<file:line or command>" | null,
+  dup: NEW|EXACT <id>|PARTIAL <id>,
+  confidence_action: BUMP|UNCHANGED,
+  reality_citation: "<file:line or exact command + relevant output>" | null,
   docs_citation: "<ctx7 ref + version>" | null,
   home: INSTINCT|"<target path>",
   kill_attempt: "<what you tried in order to refute it>" }
 ```
+
+`verdict` says what to do with the lesson; `dup` says how it relates to the existing corpus;
+`confidence_action` independently records whether this session is a fresh confirmation of an
+existing lesson. They may combine: a candidate can `MERGE` new trigger coverage into an
+existing file **and** return `confidence_action: BUMP`. `SAVE` starts a new instinct at 0.3;
+`BUMP` adds 0.1 to an existing one; `UNCHANGED` leaves an existing instinct's confidence and
+evidence count alone. A `SAVE` still creates its initial evidence entry with `evidence_count: 1`.
+
+Only these combinations are valid:
+
+| `verdict` | Allowed `dup` | Allowed `confidence_action` | Meaning |
+|---|---|---|---|
+| `SAVE` | `NEW` | `UNCHANGED` | Create a new instinct at confidence 0.3. |
+| `DROP` | any | `UNCHANGED` | Recommend no write. |
+| `BUMP` | `EXACT <id>` | `BUMP` | Add independent confirming evidence to the exact existing lesson. |
+| `MERGE` | `PARTIAL <id>` | `UNCHANGED` or `BUMP` | Extend partial coverage; bump only when the session independently confirms the lesson. |
+| `ELSEWHERE` | any | `UNCHANGED` | Route the lesson outside the instinct corpus. |
+| `UNVERIFIED` | any | `UNCHANGED` | Do not recommend a write until reality is established. |
+
+Before Phase 4, validate the tuple against this table. Ask the verifier once to correct an
+invalid combination; if it still does not return a valid tuple, treat it as `UNVERIFIED`.
 
 **A candidate with `reality_citation: null` may not return `SAVE`.** Return `UNVERIFIED` and say what stopped the probe; the orchestrator runs it before ranking. An agent that could not confirm a claim will often report that honestly in prose and still mark it `SAVE` — measured once: a verifier wrote "could not reproduce directly — this is a real gap, not a pass" and returned `SAVE` anyway, on a claim the orchestrator's own probe then refuted twice. Honesty in the narrative is not a control; the verdict field is.
 
@@ -131,10 +166,15 @@ Also treat a blocked tool call as a fact to check, not a cause to report. The sa
 
 **(a) Duplicate check** — gate D already swept for obvious coverage and may have handed you a path to start from; go deeper than a keyword match. Grep `~/.claude/homunculus/instincts/personal/` — the sole corpus — for the candidate's key terms, and for the domain, including synonyms gate D would not have guessed. (This line named a second path, `inherited/`, that has never existed; see the note under Phase 2's grep.) Return one of:
 - `NEW` — no existing instinct covers this
-- `BUMP <id>` — an existing instinct already says this; the session is fresh evidence
-- `MERGE <id>` — partial overlap; the two should become one file
+- `EXACT <id>` — an existing instinct already covers the same lesson
+- `PARTIAL <id>` — an existing instinct covers only part of the lesson
 
-**(b) Reality check** — is the claim actually true *on this branch, right now*? Open the file, run the grep, count the callsites. Return a `file:line` citation or the command whose output proves it. A claim that cannot be cited is not verified — say so rather than inventing support, and return `UNVERIFIED` rather than `SAVE`.
+**(b) Reality check** — is the claim actually true *on this branch, right now*? Open the file,
+run the grep, count the callsites. Return an exact `file:line` citation or the complete command
+and relevant output that prove it. Commands must be copy-paste reproducible: no `...`, omitted
+arguments, placeholders, or prose standing in for the probe. Include the runtime or tool version
+when behavior may vary by version. A claim that cannot be cited this way is not verified — say
+so rather than inventing support, and return `UNVERIFIED` rather than `SAVE`.
 
 A candidate harvested from the session narrative carries a *causal* claim ("X failed because Y") that was usually inferred from one error message and never tested. Reproduce it in a scratch repo before believing it. Measured once: "a staged file blocks `git stash push -- <paths>`" was inferred from a single `not uptodate` error, and two clean-room probes contradicted it — the mechanism was never established, and the instinct would have been confidently wrong.
 
@@ -161,11 +201,11 @@ Return `INSTINCT` or the better home with a specific target path.
 Present survivors **ranked by expected value** (how often the trigger fires × how much pain it prevents), highest first. One block each:
 
 ```
-N. [id] — VERDICT: SAVE | BUMP <id> to 0.X | MERGE into <id> | ELSEWHERE → <path>
+N. [id] — VERDICT: SAVE | BUMP <id> to 0.X | MERGE into <id> [and BUMP to 0.X] | ELSEWHERE → <path>
    trigger: "when <condition, containing the literal terms that will appear in future work>"
    action:  <what to do>
    In plain terms: <one sentence, no jargon — what this means and why it matters>
-   Evidence:  reality <file:line or command> | docs <ctx7 citation + version, or N/A>
+   Evidence:  reality <file:line or exact command + relevant output> | docs <ctx7 citation + version, or N/A>
    Gates:     counterfactual <the action it would have changed> · recurrence <the context> · non-derivable <why>
 ```
 
