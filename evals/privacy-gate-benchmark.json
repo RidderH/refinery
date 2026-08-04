@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "positive_outcome": "retire",
+  "candidate_flags": ["ALL_DEAD", "SOME_DEAD", "RULE_DUP"],
+  "rows": [
+    {"case": "declared_dead_path", "gate_version": "legacy", "flag": "ALL_DEAD", "human_outcome": "retire", "reason": "Synthetic declared path is gone."},
+    {"case": "declared_dead_path", "gate_version": "canonical-parser", "flag": "ALL_DEAD", "human_outcome": "retire", "reason": "Synthetic declared path is gone."},
+    {"case": "live_declared_path", "gate_version": "legacy", "flag": "CITES_OK", "human_outcome": "keep", "reason": "Synthetic path resolves."},
+    {"case": "live_declared_path", "gate_version": "canonical-parser", "flag": "CITES_OK", "human_outcome": "keep", "reason": "Synthetic path resolves."},
+    {"case": "other_machine_checkout", "gate_version": "legacy", "flag": "ALL_DEAD", "human_outcome": "keep", "reason": "Synthetic project is intentionally absent on this machine."},
+    {"case": "other_machine_checkout", "gate_version": "canonical-parser", "flag": "UNVERIFIABLE", "human_outcome": "keep", "reason": "Synthetic project is intentionally absent on this machine."},
+    {"case": "mixed_live_dead", "gate_version": "legacy", "flag": "SOME_DEAD", "human_outcome": "review", "reason": "One synthetic dependency moved and one remains live."},
+    {"case": "mixed_live_dead", "gate_version": "canonical-parser", "flag": "SOME_DEAD", "human_outcome": "review", "reason": "One synthetic dependency moved and one remains live."},
+    {"case": "unterminated_cites", "gate_version": "legacy", "flag": "CITES_NONE", "human_outcome": "keep", "reason": "Malformed synthetic declaration has no trustworthy liveness verdict."},
+    {"case": "unterminated_cites", "gate_version": "canonical-parser", "flag": "CITES_INVALID", "human_outcome": "keep", "reason": "Malformed synthetic declaration has no trustworthy liveness verdict."},
+    {"case": "duplicate_cites", "gate_version": "legacy", "flag": "ALL_DEAD", "human_outcome": "keep", "reason": "Duplicate synthetic declarations are ambiguous."},
+    {"case": "duplicate_cites", "gate_version": "canonical-parser", "flag": "CITES_INVALID", "human_outcome": "keep", "reason": "Duplicate synthetic declarations are ambiguous."},
+    {"case": "covered_rule", "gate_version": "legacy", "flag": "RULE_DUP", "human_outcome": "retire", "reason": "Synthetic rule carries the full stable lesson and lineage."},
+    {"case": "covered_rule", "gate_version": "canonical-parser", "flag": "RULE_DUP", "human_outcome": "retire", "reason": "Synthetic rule carries the full stable lesson and lineage."},
+    {"case": "accruing_rule_coverage", "gate_version": "legacy", "flag": "RULE_DUP", "human_outcome": "keep", "reason": "Synthetic lesson is still accruing evidence."},
+    {"case": "accruing_rule_coverage", "gate_version": "canonical-parser", "flag": "RULE_DUP", "human_outcome": "keep", "reason": "Synthetic lesson is still accruing evidence."}
+  ]
+}

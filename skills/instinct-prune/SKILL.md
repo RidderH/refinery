@@ -1,6 +1,6 @@
 ---
 name: instinct-prune
-description: Retire stale instincts from the corpus — bucket, shortlist, human-verify, then transactional archive. Run by a human on demand — never model-invoked. The hygiene half of the pair whose other half is instinct-distill.
+description: Identify stale instincts, obtain a human ruling, and archive approved candidates through a recoverable transaction.
 disable-model-invocation: true
 ---
 
@@ -142,9 +142,13 @@ own.
 ### Phase D — retire
 
 ```bash
-python3 ~/.claude/skills/instinct-prune/scripts/retire.py <id> --successor <rule> --why "<ruling>"      # dry-run
-python3 ~/.claude/skills/instinct-prune/scripts/retire.py <id> --no-successor --why "<ruling>"          # dry-run, ALL_DEAD
-# read the dry-run plan, then re-run with --apply
+python3 ~/.claude/skills/instinct-prune/scripts/retire.py <id> --successor <rule> \
+  --why "<ruling>" --write-plan /tmp/<id>-retirement.json
+python3 ~/.claude/skills/instinct-prune/scripts/retire.py <id> --no-successor \
+  --why "<ruling>" --write-plan /tmp/<id>-retirement.json
+# review the JSON, its exact effects, precondition hashes, recovery path, and plan_hash
+python3 ~/.claude/skills/instinct-prune/scripts/retire.py \
+  --apply-plan /tmp/<id>-retirement.json --apply
 python3 ~/.claude/skills/instinct-prune/scripts/retire.py --resume <cluster_id> --apply     # after a crash
 python3 ~/.claude/skills/instinct-prune/scripts/retire.py --rollback <cluster_id> --apply   # undo non-terminal
 ```
@@ -153,7 +157,11 @@ python3 ~/.claude/skills/instinct-prune/scripts/retire.py --rollback <cluster_id
 `rules/agents.md`) — the vocabulary `dangling_links.py` classifies as SUCCESSOR; retire.py
 refuses anything else (exit 4).
 
-**Dry-run first, always.** ARCHIVE-FIRST sequence on `PruneTransaction` (spec §5 — the
+**Review the generated plan first.** Approval is per transaction and binds its source,
+destination, citation, MANIFEST, context-root, and hash preconditions. `--apply-plan` accepts no
+free-form id/path/ruling arguments and rechecks the plan immediately before the first effect.
+
+ARCHIVE-FIRST sequence on `PruneTransaction` (spec §5 — the
 ordering is decided-by-dependency; do not re-argue it):
 
 ```
@@ -177,3 +185,11 @@ RETIRED — RETIRED means the marker never got written.
 ---
 
 **Gates are CANDIDATE FLAGS, not verdicts.** Prune never decides alone.
+
+## Definition of done
+
+- The human ruling and its evidence are recorded for every candidate considered.
+- The applied transaction matches an individually reviewed plan hash.
+- The ledger is terminal, claims are released, and archive source/destination hashes verify.
+- Citation and MANIFEST postconditions match the selected successor/no-successor mode.
+- `dangling_links.py` reports the expected successor or INTENT bucket, with no recovery debt.

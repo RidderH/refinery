@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "managed": [
+    {
+      "source": "skills/instinct-*",
+      "destination": "skills",
+      "type": "directory_glob",
+      "mode": "preserve",
+      "ownership": "managed",
+      "replace": "replace_matches",
+      "install": true
+    },
+    {
+      "source": "hooks/surface-instincts.sh",
+      "destination": "hooks/surface-instincts.sh",
+      "type": "file",
+      "mode": "executable",
+      "ownership": "managed",
+      "replace": "replace",
+      "install": true
+    },
+    {
+      "source": "rules/instincts.md",
+      "destination": "rules/instincts.md",
+      "type": "file",
+      "mode": "preserve",
+      "ownership": "managed",
+      "replace": "replace",
+      "install": true
+    },
+    {
+      "source": ".claude-plugin/plugin.json",
+      "destination": ".claude-plugin/plugin.json",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "README.md",
+      "destination": "README.md",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "CONTENT-SAFETY.md",
+      "destination": "CONTENT-SAFETY.md",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": ".gitignore",
+      "destination": ".gitignore",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "PORTABILITY.md",
+      "destination": "PORTABILITY.md",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "package-manifest.json",
+      "destination": "package-manifest.json",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "evals/privacy-gate-benchmark.json",
+      "destination": "evals/privacy-gate-benchmark.json",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "requirements-test.txt",
+      "destination": "requirements-test.txt",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "validate_skills.py",
+      "destination": "validate_skills.py",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    },
+    {
+      "source": "tests/test_validate_skills.py",
+      "destination": "tests/test_validate_skills.py",
+      "type": "metadata",
+      "mode": "preserve",
+      "ownership": "package",
+      "replace": "replace",
+      "install": false
+    }
+  ]
+}

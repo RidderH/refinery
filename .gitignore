@@ -3,6 +3,7 @@
 **/__pycache__/
 **/*.pyc
 **/.DS_Store
+.venv/
 
 # Machine-specific: real client and project names live only in this file.
 # Copy scripts/local-projects.conf.example and fill it in locally.

@@ -1,6 +1,6 @@
 ---
 name: instinct-analyze
-description: Analyze the current conversation for instinct-worthy lessons, verify each candidate before recommending it, and present a ranked recommendation list. Human-timed capture — invoked by the user, never model-initiated.
+description: Review the current conversation for durable lessons, verify each candidate, and present ranked recommendations before writing anything.
 disable-model-invocation: true
 ---
 
@@ -207,3 +207,12 @@ and appends the new evidence — it does not rewrite the existing action unless 
 that action wrong.
 
 Write instinct files to `~/.claude/homunculus/instincts/personal/`.
+
+## Definition of done
+
+- Every harvested candidate has an explicit gate outcome and every survivor has a refutation attempt.
+- Every SAVE/BUMP/MERGE recommendation cites current reality; library claims also cite current docs.
+- The recommendation states the target artifact and literal retrieval trigger.
+- Dropped candidates are named with their failing gate.
+- Nothing is written until the user selects a recommendation; after selection, the result passes
+  the `instinct-format` contract and records the new evidence.

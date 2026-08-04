@@ -37,13 +37,17 @@ import re
 import sys
 import tempfile
 
+FORMAT_SCRIPTS = pathlib.Path(__file__).resolve().parents[2] / "instinct-format" / "scripts"
+sys.path.insert(0, str(FORMAT_SCRIPTS))
+from instinct_record import InstinctFormatError, parse_text  # noqa: E402
+
 DEFAULT_ROOT = pathlib.Path.home() / ".claude/homunculus/instincts/personal"
 UNTYPED = "`?`"
 OUTCOMES = ("repeated_failure", "successful_recall", "confirmation", "correction",
             "first_observation")   # see build_index.py / GATES.md — user ruling 2026-07-29
 
 FM = re.compile(r"\A---\n(.*?)\n---\n", re.S)
-# Any heading naming Evidence, not just the canonical one. `verify-before-building`
+# Any heading naming Evidence, not just the canonical one. `retry-backoff-must-be-jittered`
 # — the highest-degree node in the whole link graph — keeps its dated entries under
 # `## Additional evidence`, so an exact-match on `## Evidence` normalises zero of them
 # while reporting success.
@@ -65,9 +69,9 @@ H2 = re.compile(r"^##\s+(.*)$")
 # a bold/italic lead like `**Pattern:**`, which is structural prose inside an entry's
 # section, not an entry of its own.
 NOTPARA = ("-", "*", "#", ">", "`")
-# A `---` thematic break. `check-docs-before-theorizing.evidence.md` delimits its entries
-# with these and says so in its own preamble; blank lines inside one of its blocks are
-# paragraph breaks WITHIN an entry, not entry boundaries.
+# A `---` thematic break. `verify-docs-before-assuming-api-shape.evidence.md` delimits its
+# entries with these and says so in its own preamble; blank lines inside one of its blocks
+# are paragraph breaks WITHIN an entry, not entry boundaries.
 HR = re.compile(r"^-{3,}\s*$")
 # How far into a paragraph a date may sit and still count as "this paragraph LEADS with a
 # date". `Acme_App session 2026-05-28: …` puts it at index 17 (0-based); a date buried in the
@@ -248,7 +252,7 @@ def segments_of(lines, heading):
     delimiter is present:
 
       1. dated `## ` headings   (`green-guards-…`, `stacked-pr-…`) — one entry per heading
-      2. `---` thematic breaks  (`check-docs-before-theorizing`) — one entry per block
+      2. `---` thematic breaks  (`verify-docs-before-assuming-api-shape`) — one entry per block
       3. neither                — a paragraph is an entry only if it LEADS with a date
 
     Text before the first delimiter is the document PREAMBLE and is never an entry.
@@ -334,8 +338,8 @@ def migrate_section(sec, st, heading=None):
         blks = blocks_of(seg_lines)
         # TIER 3 — dated column-0 bullets govern. When a segment already lists its
         # evidence as dated bullets, a stray column-0 paragraph is a note ABOUT the list
-        # ("Age note: the bypassPermissions entry is from 2026-02-17 and has not been
-        # re-verified…"), not another observation. Dating it added a sixth entry to a
+        # (an age note flagging that an earlier entry has not been re-verified against
+        # current behaviour), not another observation. Dating it added a sixth entry to a
         # five-entry archive.
         bullets_govern = not seg["governed"] and any(
             k == "bullet" and bullet_date(seg_lines[lo:hi])[0] for k, lo, hi in blks)
@@ -386,10 +390,10 @@ def migrate_section(sec, st, heading=None):
             if kind == "fence" or (kind == "other" and blk[0][:1] in NOTPARA):
                 # Bold leads, blockquotes, fenced code: never an entry on their OWN
                 # evidence, but they are part of an entry whose boundary something else
-                # already declared. `check-docs-…evidence.md`'s third `---` block opens
-                # with `**Time-bound factual claims…** (…, 2026-04-27):` — skipping it
-                # because of the leading `**` dropped a whole entry the delimiter had
-                # already marked out.
+                # already declared. A `---`-delimited archive's third block can open
+                # with a bold lead naming a sub-pattern and a parenthetical date —
+                # skipping it because of the leading `**` dropped a whole entry the
+                # delimiter had already marked out.
                 if body or (seg["governed"] and not done_body):
                     body.append(blk)
                 else:
@@ -439,6 +443,16 @@ def migrate_text(text, name="<mem>"):
     if name.endswith(".evidence.md"):
         return migrate_section(text, st), st
 
+    try:
+        parsed = parse_text(text)
+    except InstinctFormatError as exc:
+        raise Malformed(f"{name}: {exc}")
+    if parsed.kind == "legacy":
+        raise Malformed(f"{name}: no parseable YAML frontmatter")
+
+    # Byte offsets still come from this narrow boundary regex because migration must
+    # preserve the original frontmatter bytes. Its meaning has already been validated
+    # by the canonical parser above; this is slicing, not a second interpretation.
     fm = FM.match(text)
     if not fm:
         raise Malformed(f"{name}: no parseable YAML frontmatter")
@@ -567,7 +581,7 @@ def selftest():
         ok = ok and cond
 
     good = ("---\nid: x\nevidence_count: 2\n---\n\n## Evidence (n=2, latest 2)\n"
-            "- **2026-07-19** — did a thing\n- Session 2026-07-27 (Beta_Site): did another\n")
+            "- **2026-07-19** — did a thing\n- Session 2026-07-27 (Acme_App): did another\n")
     new, st = migrate_text(good)
     check("spec + legacy bullets both normalised", st["normalised"] == 2)
     check("untyped marker present twice", new.count(UNTYPED) == 2)
@@ -598,7 +612,7 @@ def selftest():
     except Malformed as e:
         check("malformed frontmatter raises, naming the file", "probe.md" in str(e))
 
-    # Regression: `verify-before-building` (highest link degree in the corpus) keeps its
+    # Regression: `retry-backoff-must-be-jittered` (highest link degree in the corpus) keeps its
     # dated entries under `## Additional evidence`. Matching only `## Evidence` normalised
     # zero of them while reporting success.
     multi = ("---\nid: x\n---\n\n## Evidence\n- Session 2026-01-02: first\n\n"
@@ -691,19 +705,19 @@ def selftest():
     p6, sp6 = migrate_text(skip)
     check("PARA: fenced code / blockquote / bold-lead are not entries",
           sp6["normalised"] == 0 and sp6["undatable"] == 0)
-    # Found on a real archive, not invented: skipping a `**Bold lead.**` block ONE LINE at
-    # a time left its wrapped remainder at column 0, so the tail of a sentence opened a new
+    # This shape is not hypothetical: skipping a `**Bold lead.**` block ONE LINE at a time
+    # left its wrapped remainder at column 0, so the tail of a sentence opened a new
     # paragraph and became an entry — a fabricated observation, dated from the heading.
     wrapped = ("---\nid: x\n---\n\n## Evidence — 2026-07-29\n\n"
-               "**Distinction from the entry below.** That one is a live guard whose\n"
-               "branch the fixture never visited — a data problem. This one is\n"
-               "unreachable by construction.\n")
+               "**Distinction from the entry above.** That one is a stale cache key the\n"
+               "sweep never touched — a config problem. This one is unreachable by\n"
+               "construction.\n")
     p6b, sp6b = migrate_text(wrapped)
     check("PARA: a wrapped block becomes exactly ONE entry, never one per line",
           sp6b["normalised"] == 1 and p6b.count("- **2026-07-29**") == 1)
     check("PARA: the whole block's text survives in that one entry",
-          "**Distinction from the entry below.** That one is a live guard whose branch "
-          "the fixture never visited — a data problem. This one is unreachable by "
+          "**Distinction from the entry above.** That one is a stale cache key the "
+          "sweep never touched — a config problem. This one is unreachable by "
           "construction." in p6b)
 
     check("PARA: fenced code preserved byte-for-byte (body unchanged; only the "
@@ -777,19 +791,19 @@ def selftest():
     m1b, _ = migrate_text(m1)
     check("RECONCILE: idempotent", m1b == m1)
 
-    # Real-corpus regression: the exact shape of
-    # `green-guards-prove-nothing-until-you-make-them-red.evidence.md` — a preamble with a
-    # Scope note that NAMES a date, two dated `##` headings each holding several
-    # paragraphs (one led by `**Bold.**`, one ending in a `Merged from:` provenance line
-    # and a summary paragraph), then already-dated column-0 bullets. The live file
-    # declares 8 and holds 8; segmenting on blank lines produced 15.
+    # Synthetic regression fixture, modelled on the general shape a merged evidence
+    # archive can take: a preamble with a Scope note that NAMES a date, two dated `##`
+    # headings each holding several paragraphs (one led by `**Bold.**`, one ending in a
+    # `Merged from:` provenance line and a summary paragraph), then already-dated
+    # column-0 bullets. A live archive of this shape can declare N and hold N while
+    # segmenting on blank lines alone would nearly double the count.
     gg = ("# Evidence archive — g\n\n"
           "Full history. The lesson lives in `g.md`; this file exists so the pattern\n"
           "stays visible.\n\n"
           "Scope note: on 2026-07-28 this file was split. Three entries about a stale\n"
           "manifest moved to another archive.\n\n"
           "## 2026-07-29 — two guards where one subsumes the other\n\n"
-          "Beta_Site, item C4.4: add two validation guards to buildLoopStatics.\n\n"
+          "Acme_App, task T-12: add two validation guards to computeRetryDelay.\n\n"
           "The two are not independent; every input that trips the specific guard also\n"
           "trips the general one.\n\n"
           "Caught before writing either guard, by asking what fixture makes only the new\n"
@@ -797,16 +811,16 @@ def selftest():
           "**Distinction from the entry below.** That one is a live guard whose branch\n"
           "the fixture never visited.\n\n"
           "## 2026-07-29 — a neuter that stayed green because the fixture never reached\n\n"
-          "Beta_Site, executing the codebase-correctness plan. Neutered the emitter and\n"
+          "Acme_App, executing the validation-hardening plan. Neutered the emitter and\n"
           "the test stayed green.\n\n"
           "It was not dead. A probe showed the buffer never empties in that window.\n\n"
           "Merged from: session observation, `/instinct-analyze` 2026-07-29.\n\n"
           "Read together, the six below form a ladder of how little a green suite can\n"
           "mean.\n\n"
-          "- **2026-07-10** *(from redundant-defences)* — two independent defences meant\n"
-          "  neutering one alone never went red.\n"
-          "- **2026-06-05** *(from green-test-encodes-the-bug)* — the test encoded the\n"
-          "  silent-drop bug as expected behaviour.\n")
+          "- **2026-07-10** *(from duplicate-validation-layers)* — two independent\n"
+          "  defences meant neutering one alone never went red.\n"
+          "- **2026-06-05** *(from test-encodes-the-bug-as-expected)* — the test encoded\n"
+          "  the silent-drop bug as expected behaviour.\n")
     g1, sg = migrate_text(gg, "g.evidence.md")
     check("GREEN-GUARDS SHAPE: exactly 4 entries — 2 headed + 2 bullets, not 9",
           parsed_entries(g1, "g.evidence.md") == 4)
@@ -825,15 +839,15 @@ def selftest():
     g2, _ = migrate_text(g1, "g.evidence.md")
     check("GREEN-GUARDS SHAPE: idempotent", g2 == g1)
 
-    # `---`-delimited archive (`check-docs-before-theorizing.evidence.md`): one entry per
-    # block however many paragraphs and sub-bullets it holds, preamble excluded.
+    # `---`-delimited archive (`verify-docs-before-assuming-api-shape.evidence.md`): one
+    # entry per block however many paragraphs and sub-bullets it holds, preamble excluded.
     hr = ("# Evidence archive — h\n\nFull history. Entries are `---`-delimited.\n\n"
           "---\n\nAcme_App session 2026-05-28: ran three ctx7 lookups in parallel:\n"
           "- `/tailwindlabs/tailwindcss.com` on `@theme inline` — confirmed.\n"
           "- `/resend/react-email` on email images — verbatim quote.\n\n"
           "Plus three web searches that refined two recommendations.\n\n"
           "---\n\n"
-          "**Time-bound factual claims are a sub-pattern of this** (2026-04-27): wrote a\n"
+          "**Stale-cache claims are a sub-pattern of this** (2026-04-27): wrote a\n"
           "confident time-stamped claim with no source.\n")
     h1, sh = migrate_text(hr, "h.evidence.md")
     check("HR SHAPE: one entry per `---` block, not per paragraph",
@@ -845,8 +859,9 @@ def selftest():
     check("HR SHAPE: preamble excluded", sh["preamble_skipped"] == 1)
 
     # Bullets govern: a dated bullet list makes a stray paragraph a NOTE about the list,
-    # not another observation. `a-harness-signal-…evidence.md`'s "Age note:" paragraph
-    # names a date and became a sixth entry in a five-entry archive.
+    # not another observation. A file whose evidence is a short dated bullet list can
+    # carry an "Age note:" paragraph that names a date and, unguarded, becomes a sixth
+    # entry in a five-entry archive.
     note = ("# Evidence archive — n\n\n"
             "- **2026-07-19** `?` — the first entry.\n"
             "- **2026-02-17** `?` — the second entry.\n\n"
@@ -861,9 +876,9 @@ def selftest():
     # ------------------------------------------------- DEMOTION: never destroy an entry
     # Indenting a column-0 bullet does not tidy it, it DELETES it — `build_index.PROSE`
     # matches column 0 only. Measured at 72 files / 146 entries before this was caught,
-    # and none of it showed in any stat. Modelled on the real
-    # `service-role-client-is-the-whole-authz-story.md`: a dated bullet followed by an
-    # undated one, which went 2 readable entries -> 1.
+    # and none of it showed in any stat. Modelled on a file whose evidence section is
+    # exactly this shape: a dated bullet followed by an undated one, which went 2
+    # readable entries -> 1.
     demo = ("---\nid: x\nevidence_count: 3\n---\n\n## Evidence\n"
             "- **2026-05-04** `?` — the dated entry.\n"
             "- A second observation nobody dated.\n")
@@ -969,7 +984,7 @@ def selftest():
     archive = ("# Evidence archive — x\n\nFull history, newest first. The lesson lives in\n"
                "`x.md`; this file exists so the pattern stays visible.\n\n"
                "- **2026-05-07** *(from old-source)* — Acme_App. Did a thing.\n\n"
-               "- Session 2026-04-01 (Beta_Site): did another.\n")
+               "- Session 2026-04-01 (Acme_App): did another.\n")
     n9, st9 = migrate_text(archive, "x.evidence.md")
     check("ARCHIVE: no frontmatter is not Malformed", st9["normalised"] == 2)
     check("ARCHIVE: untyped marker present twice", n9.count(UNTYPED) == 2)

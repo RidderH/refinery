@@ -38,9 +38,8 @@ removed because it bypassed every verification gate.
 
 ```bash
 git clone <this-repo> ~/refinery
-cp -R ~/refinery/skills/instinct-* ~/.claude/skills/
-cp ~/refinery/hooks/surface-instincts.sh ~/.claude/hooks/
-cp ~/refinery/rules/instincts.md ~/.claude/rules/
+python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
+  install ~/refinery/package-manifest.json ~/refinery ~/.claude
 mkdir -p ~/.claude/homunculus/instincts/personal
 ```
 
@@ -61,14 +60,22 @@ Then register the session-start hook by adding this to the `hooks.SessionStart` 
 
 ### Update
 
-Re-run the three `cp` lines. Your corpus lives in `~/.claude/homunculus/` and is never
-touched by an update.
+The versioned package manifest owns exactly the four skills, hook, and rule. Update
+reconciles those managed paths, removing files deleted upstream while leaving the corpus
+and all unrelated configuration untouched:
+
+```bash
+python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
+  update ~/refinery/package-manifest.json ~/refinery ~/.claude
+```
+
+Your corpus lives in `~/.claude/homunculus/` and is never touched by an update.
 
 ### Uninstall
 
 ```bash
-rm -rf ~/.claude/skills/instinct-*
-rm -f ~/.claude/hooks/surface-instincts.sh ~/.claude/rules/instincts.md
+python3 ~/refinery/skills/instinct-prune/scripts/package_manifest.py \
+  uninstall ~/refinery/package-manifest.json ~/refinery ~/.claude
 ```
 
 Then remove the whole `SessionStart` object you added above — deleting only the `command`
@@ -87,10 +94,32 @@ Everything works without the file — path resolution falls back to generic disc
 ## Requirements
 
 - Claude Code
-- `bash` 3.2+, `python3`, standard POSIX tools; `gitleaks` only for the publish gate
+- `bash` 3.2+, `python3` (≥ 3.9), standard POSIX tools; `gitleaks` only for the publish gate
 - Developed and tested on macOS (bash 3.2). Linux should work; Windows means WSL.
   Full platform contract — what's assumed, and what happens when an assumption fails —
   in [PORTABILITY.md](PORTABILITY.md).
+
+The installed runtime uses only Python's standard library. PyYAML is an optional,
+test-only dependency used to give contributors an independent check that skill frontmatter is
+valid YAML; it is never installed by the package manifest.
+
+## Contributor validation
+
+From a published Refinery checkout, create an isolated test environment and run:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -r requirements-test.txt
+python3 -m unittest discover -s tests -v
+python3 validate_skills.py .
+```
+
+The validator uses PyYAML's safe loader and adds stricter skill-contract checks for duplicate
+keys, required metadata, skill identity, known fields, and invocation-flag types. PyYAML is an
+independent syntax check, not the normative parser for instinct records. The test suite also runs
+the shipped canonical parser with site-packages disabled, preserving the zero-dependency runtime
+contract.
 
 ## Content safety
 

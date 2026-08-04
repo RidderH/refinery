@@ -32,9 +32,12 @@ import pathlib
 import re
 import sys
 
+FORMAT_SCRIPTS = pathlib.Path(__file__).resolve().parents[2] / "instinct-format" / "scripts"
+sys.path.insert(0, str(FORMAT_SCRIPTS))
+from instinct_record import InstinctFormatError, parse_file  # noqa: E402
+
 DEFAULT_ROOT = pathlib.Path.home() / ".claude/homunculus/instincts/personal"
 
-FM = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 LINK = re.compile(r"\[\[([^\]]+)\]\]")
 WORD = re.compile(r"[a-z0-9_.\-/]+")
 
@@ -69,32 +72,28 @@ def tokens(text):
 
 
 def parse(p):
-    t = p.read_text()
-    m = FM.match(t)
-    if not m:
+    try:
+        record = parse_file(p)
+    except (OSError, InstinctFormatError):
         return None
-    fm, body = m.group(1), t[m.end():]
-
-    def field(name):
-        mm = re.search(rf"^{name}:\s*(.*?)$", fm, re.M)
-        if not mm:
-            return ""
-        val = mm.group(1).strip().strip('"')
-        # trigger:/action: wrap across lines; gather the indented continuation
-        tail = re.search(rf"^{name}:.*?\n((?:[ \t]+\S.*\n)*)", fm, re.M | re.S)
-        if tail:
-            val += " " + " ".join(l.strip().strip('"') for l in tail.group(1).splitlines())
-        return val.strip()
-
-    ec = re.search(r"^evidence_count:\s*(\d+)", fm, re.M)
+    if record.kind == "legacy":
+        return None
+    values = record.values
+    evidence_count = values.get("evidence_count", 0)
+    if not isinstance(evidence_count, int):
+        evidence_count = 0
+    trigger = values.get("trigger") if isinstance(values.get("trigger"), str) else ""
+    action = values.get("action") if isinstance(values.get("action"), str) else ""
+    domain = values.get("domain") if isinstance(values.get("domain"), str) else ""
+    text = p.read_text()
     return {
         "id": p.stem,
-        "domain": field("domain"),
-        "trigger": field("trigger"),
-        "action": field("action"),
-        "evidence_count": int(ec.group(1)) if ec else 0,
-        "links": LINK.findall(body) + LINK.findall(fm),
-        "tokens": tokens(field("trigger") + " " + field("action")),
+        "domain": domain,
+        "trigger": trigger,
+        "action": action,
+        "evidence_count": evidence_count,
+        "links": LINK.findall(text),
+        "tokens": tokens(trigger + " " + action),
     }
 
 
@@ -213,7 +212,24 @@ def main():
 
     top_k = opt("--top-k", 12, int)
     min_score = opt("--min-score", 0.0, float)
+
+    # Anything left starting with "-" is an unrecognized flag (e.g. a typo'd --jsno).
+    # Falling through would let it be swallowed as `args[0]` below and misread as ROOT —
+    # a nonexistent corpus that reports a clean "candidates=0 clusters=0" with exit 0.
+    unknown = [a for a in args if a.startswith("-")]
+    if unknown:
+        print(__doc__, file=sys.stderr)
+        print(f"\nerror: unrecognized option(s): {' '.join(unknown)}", file=sys.stderr)
+        return 2
+
     root = pathlib.Path(args[0]) if args else DEFAULT_ROOT
+    # A tool that cannot see its corpus must not report "no work" (same fail-closed
+    # contract as the malformed-file handling below). Applies to DEFAULT_ROOT too: an
+    # unset/moved home corpus must error, not silently return empty-clean via load()'s
+    # glob-over-missing-dir behavior.
+    if not root.is_dir():
+        print(f"error: corpus root does not exist: {root}", file=sys.stderr)
+        return 3
 
     records, malformed = load(root)
     clusters, n_edges = build(records, top_k, min_score)
@@ -325,6 +341,20 @@ def selftest():
         recs4, bad4 = load(root)
         check("malformed file is reported by name", bad4 == ["wrecked.md"])
         check("malformed file is not silently a candidate", "wrecked" not in recs4)
+
+        # A mistyped flag (e.g. `--jsno`) must not fall through and get read as ROOT —
+        # that silently reports a clean "no work" instead of failing loud.
+        old_argv = sys.argv
+        try:
+            sys.argv = ["shortlist.py", "--jsno"]
+            rc = main()
+            check("unrecognized flag exits 2, not swallowed as ROOT", rc == 2)
+
+            sys.argv = ["shortlist.py", str(root / "does-not-exist")]
+            rc = main()
+            check("nonexistent explicit root exits 3, not empty-clean", rc == 3)
+        finally:
+            sys.argv = old_argv
 
     print("\nSELFTEST:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

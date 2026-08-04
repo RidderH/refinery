@@ -26,8 +26,139 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
+
+# A source id becomes a path via `claims / sid`. pathlib's `/` DISCARDS the left
+# operand when the right is absolute — `claims / "/tmp/victim"` is `/tmp/victim`,
+# not an error — and ".." climbs out of the store just as normal filesystem
+# traversal would. Every id must be checked BEFORE it meets a path operator.
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+class UnsafeSourceId(Exception):
+    """A source id failed SAFE_ID — most often an absolute path ("/tmp/x", which
+    pathlib's `/` operator silently substitutes for the whole claims path instead
+    of raising) or a ".." segment. Raised before the id ever reaches `claims / sid`
+    or `root / f"{sid}.md"`, because catching it after would mean the escape
+    already happened."""
+
+
+class InvalidTransactionRecord(Exception):
+    """Persisted transaction data is malformed or unsafe to replay."""
+
+
+def check_source_id(sid):
+    """Refuse anything that is not a bare filename-safe token. Returns sid
+    unchanged so callers can inline it: `for sid in map(check_source_id, sources)`."""
+    if not isinstance(sid, str) or "/" in sid or "\\" in sid or ".." in sid \
+            or not SAFE_ID.match(sid):
+        raise UnsafeSourceId(f"unsafe source id: {sid!r}")
+    return sid
+
+
+def check_cluster_id(cluster_id):
+    """Cluster IDs are persisted filenames and must obey the same safe-component rule."""
+    try:
+        return check_source_id(cluster_id)
+    except UnsafeSourceId as e:
+        raise InvalidTransactionRecord(f"unsafe cluster id: {cluster_id!r}") from e
+
+
+def _within(path, root):
+    try:
+        pathlib.Path(path).resolve().relative_to(pathlib.Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def validate_transaction_data(data, cluster_id, store, sequence=None):
+    """Validate every persisted field before recovery may interpret any effect path."""
+    check_cluster_id(cluster_id)
+    if not isinstance(data, dict):
+        raise InvalidTransactionRecord(
+            f"{cluster_id}: transaction record must be an object")
+    required = {"cluster_id", "state", "sources", "history", "citations",
+                "archive_dir", "manifest_rows"}
+    missing = sorted(required - set(data))
+    if missing:
+        raise InvalidTransactionRecord(
+            f"{cluster_id}: missing persisted field(s): {', '.join(missing)}")
+    if data.get("cluster_id") != cluster_id:
+        raise InvalidTransactionRecord(
+            f"{cluster_id}: record cluster_id does not match its filename")
+
+    sources = data.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise InvalidTransactionRecord(
+            f"{cluster_id}: sources must be a non-empty list")
+    try:
+        for sid in sources:
+            check_source_id(sid)
+    except UnsafeSourceId as e:
+        raise InvalidTransactionRecord(f"{cluster_id}: {e}") from e
+    if len(set(sources)) != len(sources):
+        raise InvalidTransactionRecord(f"{cluster_id}: sources contain duplicates")
+
+    allowed_states = set(FORWARD) | set(PRUNE_FORWARD) | set(ROLLBACK)
+    if data.get("state") not in allowed_states:
+        raise InvalidTransactionRecord(f"{cluster_id}: invalid state {data.get('state')!r}")
+    history = data.get("history")
+    if (not isinstance(history, list) or not history
+            or any(not isinstance(state, str) or state not in allowed_states
+                   for state in history)
+            or history[0] != "DISCOVERED" or history[-1] != data["state"]):
+        raise InvalidTransactionRecord(
+            f"{cluster_id}: history must start at DISCOVERED and end at state")
+    if sequence is not None:
+        seq = list(sequence)
+        for previous, current in zip(history, history[1:]):
+            legal = (current == previous
+                     or current == "ROLLING_BACK" and previous not in TERMINAL
+                     and previous != "COMMITTING"
+                     or current == "ROLLED_BACK" and previous == "ROLLING_BACK"
+                     or previous in seq and current in seq
+                     and seq.index(current) == seq.index(previous) + 1)
+            if not legal:
+                raise InvalidTransactionRecord(
+                    f"{cluster_id}: illegal persisted transition {previous} → {current}")
+
+    citations = data.get("citations")
+    if not isinstance(citations, list):
+        raise InvalidTransactionRecord(f"{cluster_id}: citations must be a list")
+    for triple in citations:
+        if (not isinstance(triple, list) or len(triple) != 3
+                or any(not isinstance(item, str) for item in triple)):
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: each citation must be a three-string list")
+        if not _within(triple[0], store.root):
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: citation path escapes corpus: {triple[0]}")
+
+    for key, owned_root in (("artifact", store.root),
+                            ("archive_dir", store.root.parent),
+                            ("manifest_path", store.root.parent)):
+        value = data.get(key)
+        if value is not None and (not isinstance(value, str) or not _within(value, owned_root)):
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: {key} escapes its owned root: {value!r}")
+
+    rows = data.get("manifest_rows")
+    if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+        raise InvalidTransactionRecord(f"{cluster_id}: manifest_rows must be strings")
+    hashes = data.get("archive_hashes", {})
+    expected_names = {f"{sid}{suffix}" for sid in sources
+                      for suffix in (".md", ".evidence.md")}
+    if (not isinstance(hashes, dict)
+            or any(name not in expected_names or not isinstance(digest, str)
+                   or not re.fullmatch(r"[0-9a-f]{16}", digest)
+                   for name, digest in hashes.items())):
+        raise InvalidTransactionRecord(
+            f"{cluster_id}: archive_hashes contains an invalid name or digest")
+    return data
+
 
 FORWARD = [
     "DISCOVERED", "CLAIMED", "ARTIFACT_WRITTEN", "CITATIONS_REPOINTED",
@@ -179,6 +310,10 @@ class Store:
         transaction relies on them. Idempotent."""
         stale = self.stale_claims()
         for sid in stale:
+            # Claim names come from disk listing (iterdir), not user input, but
+            # a hand-edited ledger/claims dir is still an attack surface — check
+            # before unlink rather than trust the source.
+            check_source_id(sid)
             (self.claims / sid).unlink(missing_ok=True)
         return stale
 
@@ -187,7 +322,12 @@ class Store:
             return []
         out = []
         for p in sorted(self.ledger.glob("*.json")):
-            d = json.loads(p.read_text())
+            try:
+                d = json.loads(p.read_text())
+            except (OSError, json.JSONDecodeError) as e:
+                raise InvalidTransactionRecord(
+                    f"{p.stem}: unreadable transaction record: {e}") from e
+            validate_transaction_data(d, p.stem, self)
             if d["state"] not in TERMINAL:
                 out.append(d)
         return out
@@ -197,6 +337,7 @@ class Transaction:
     SEQUENCE = FORWARD  # subclasses override; validation is per-class (6b-3)
 
     def __init__(self, store, cluster_id, data=None):
+        check_cluster_id(cluster_id)
         self.store = store
         self.cluster_id = cluster_id
         self.path = store.ledger / f"{cluster_id}.json"
@@ -204,23 +345,34 @@ class Transaction:
             "cluster_id": cluster_id, "state": "DISCOVERED", "sources": [],
             "history": [], "artifact": None, "artifact_hash_before": None,
             "citations": [], "archive_dir": None, "manifest_rows": [],
+            "archive_hashes": {},
             "watermark_before": None, "reason": None,
         }
 
     # ---------------------------------------------------------------- lifecycle
     @classmethod
     def begin(cls, store, cluster_id, sources):
+        sources = list(sources)
+        for sid in sources:
+            check_source_id(sid)
         tx = cls(store, cluster_id)
-        tx.d["sources"] = list(sources)
+        tx.d["sources"] = sources
         tx._record("DISCOVERED")
         return tx
 
     @classmethod
     def load(cls, store, cluster_id):
+        check_cluster_id(cluster_id)
         p = store.ledger / f"{cluster_id}.json"
         if not p.exists():
             return None
-        return cls(store, cluster_id, json.loads(p.read_text()))
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            raise InvalidTransactionRecord(
+                f"{cluster_id}: unreadable transaction record: {e}") from e
+        validate_transaction_data(data, cluster_id, store, cls.SEQUENCE)
+        return cls(store, cluster_id, data)
 
     def _legal(self, cur, new):
         if new == cur:
@@ -252,6 +404,7 @@ class Transaction:
         snapshot must be durable before anything becomes invisible to prune."""
         self._record("CLAIMED", watermark_before=self.store.read_watermark())
         for sid in self.d["sources"]:
+            check_source_id(sid)
             _atomic_write(self.store.claims / sid, self.cluster_id)
         return self
 
@@ -369,6 +522,7 @@ class Transaction:
 
     def _release_claims(self):
         for sid in self.d["sources"]:
+            check_source_id(sid)
             (self.store.claims / sid).unlink(missing_ok=True)
 
     # ---------------------------------------------------------------- recovery
@@ -390,7 +544,8 @@ class PruneTransaction(Transaction):
     order."""
     SEQUENCE = PRUNE_FORWARD
 
-    def record_plan(self, archive_dir, citations, manifest_path, manifest_rows):
+    def record_plan(self, archive_dir, citations, manifest_path, manifest_rows,
+                    archive_hashes=None):
         """Persist the WHOLE retirement plan up front (a same-state re-record,
         legal by 6b-3). Without this, a crash before a step's own record left
         --resume unable to reconstruct intent — the plan lived only in the
@@ -398,7 +553,8 @@ class PruneTransaction(Transaction):
         self._record(self.d["state"], archive_dir=str(archive_dir),
                      citations=[list(t) for t in citations],
                      manifest_path=str(manifest_path),
-                     manifest_rows=list(manifest_rows))
+                     manifest_rows=list(manifest_rows),
+                     archive_hashes=dict(archive_hashes or {}))
         return self
 
 
@@ -719,6 +875,88 @@ def selftest():
         except AssertionError:
             caught = True
         check("watermark moving before COMMITTED trips the assert", caught)
+
+    # ---- source-id path escape (pathlib `/` discards root for an absolute
+    # right side, so an unchecked sid can write/unlink outside the store) ----
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _corpus(tmp)
+        st = Store(root)
+        sentinel = pathlib.Path(tmp) / "victim.txt"
+        sentinel.write_text("do not touch\n")
+        for bad in ("/tmp/whatever", "../evil", "a/b", "..", ""):
+            try:
+                Transaction.begin(st, "cx", ["src-a", bad])
+                raised = False
+            except UnsafeSourceId:
+                raised = True
+            check(f"begin() refuses unsafe id {bad!r}", raised)
+        check("no ledger entry was written for the refused id",
+              not (st.ledger / "cx.json").exists())
+        check("claims dir has nothing unexpected", st.claims.is_dir() is False
+              or list(st.claims.iterdir()) == [])
+        check("sentinel outside the store is untouched",
+              sentinel.exists() and sentinel.read_text() == "do not touch\n")
+        # claim() and _release_claims() are also reachable with a bad id via a
+        # hand-edited ledger (Transaction.load bypasses begin()'s check), so
+        # they must enforce independently, not rely on begin() alone.
+        tx = Transaction(st, "cx2")
+        tx.d["sources"] = ["/tmp/whatever"]
+        try:
+            tx.claim()
+            raised = False
+        except UnsafeSourceId:
+            raised = True
+        check("claim() refuses an unsafe id even bypassing begin()", raised)
+        check("claim() wrote nothing outside the store",
+              sentinel.read_text() == "do not touch\n")
+        tx2 = Transaction(st, "cx3")
+        tx2.d["sources"] = ["../evil"]
+        try:
+            tx2._release_claims()
+            raised = False
+        except UnsafeSourceId:
+            raised = True
+        check("_release_claims() refuses an unsafe id", raised)
+        # RED probe: neuter check_source_id and confirm the guard actually
+        # gates something — a green result on unmodified code proves nothing
+        # if the call site never runs the check.
+        # Patch THIS module's own namespace, not a re-import — running as
+        # `python3 ledger.py` registers the file as `__main__`, so `import
+        # ledger` would load a SECOND, distinct module object whose functions
+        # Transaction.claim() never calls.
+        _ledger_mod = sys.modules[__name__]
+        original = _ledger_mod.check_source_id
+        # Target an absolute path under the sandbox-writable tmp tree (not
+        # literal /tmp) so the probe demonstrates the pathlib escape itself,
+        # not an unrelated permission denial from writing outside the sandbox.
+        escape_target = pathlib.Path(tmp) / "should-be-blocked"
+        _ledger_mod.check_source_id = lambda sid: sid  # neuter
+        try:
+            tx3 = Transaction(st, "cx4")
+            tx3.d["sources"] = [str(escape_target)]
+            tx3.claim()
+            neutered_wrote_outside = escape_target.exists()
+        finally:
+            _ledger_mod.check_source_id = original
+            escape_target.unlink(missing_ok=True)
+        check("RED probe: neutering check_source_id lets the escape happen "
+              "(proves the guard, when live, is what stops it)",
+              neutered_wrote_outside)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _corpus(tmp)
+        st = Store(root)
+        st.ledger.mkdir(parents=True)
+        malformed = Transaction(st, "bad-origin").d
+        malformed.update({"sources": ["src-a"], "state": "ARCHIVED",
+                          "history": ["ARCHIVED"]})
+        (st.ledger / "bad-origin.json").write_text(json.dumps(malformed))
+        try:
+            Transaction.load(st, "bad-origin")
+            rejected = False
+        except InvalidTransactionRecord:
+            rejected = True
+        check("persisted history must originate at DISCOVERED", rejected)
 
     print("\nSELFTEST:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

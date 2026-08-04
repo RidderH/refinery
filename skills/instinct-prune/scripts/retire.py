@@ -26,12 +26,15 @@ R3 (evidence lineage) is made.
 
 Usage:
   retire.py <id>... (--successor <rule> | --no-successor) [--why "<text>"]
-            [--date YYYY-MM-DD] [--root <personal-dir>] [--apply]
+            [--date YYYY-MM-DD] [--root <personal-dir>] [--write-plan FILE]
+  retire.py --apply-plan FILE [--apply]
   retire.py --resume <cluster_id> [--root ...] [--apply]
   retire.py --rollback <cluster_id> [--root ...] [--apply]
   retire.py --selftest
 """
 import datetime
+import hashlib
+import json
 import pathlib
 import re
 import sys
@@ -39,14 +42,161 @@ import sys
 DISTILL_SCRIPTS = pathlib.Path(__file__).resolve().parent.parent.parent \
     / "instinct-distill/scripts"
 sys.path.insert(0, str(DISTILL_SCRIPTS))
-from ledger import (PruneTransaction, Store, manifest_append,  # noqa: E402
-                    recover)
+from ledger import (InvalidTransactionRecord, PruneTransaction, Store,  # noqa: E402
+                    UnsafeSourceId, check_source_id, content_hash,
+                    manifest_append, recover)
+from runtime_context import RuntimeContext  # noqa: E402
 FORMAT_SCRIPTS = pathlib.Path(__file__).resolve().parent.parent.parent \
     / "instinct-format/scripts"
 sys.path.insert(0, str(FORMAT_SCRIPTS))
 from dangling_links import successor_ids  # noqa: E402
 
 CORPUS = pathlib.Path.home() / ".claude/homunculus/instincts/personal"
+PLAN_SCHEMA_VERSION = 1
+
+
+def full_hash(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def plan_digest(payload):
+    body = dict(payload)
+    body.pop("plan_hash", None)
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def runtime_context(root):
+    """Resolve all operational roots once, at the CLI boundary."""
+    return RuntimeContext.from_corpus(root).as_dict()
+
+
+def create_retirement_plan(root, sources, successor, why, date):
+    """Build the exact, reviewable retirement plan without performing effects."""
+    root = pathlib.Path(root).resolve()
+    for sid in sources:
+        check_source_id(sid)
+    if not sources or len(set(sources)) != len(sources):
+        raise ValueError("sources must be a non-empty list without duplicates")
+    date = check_retirement_date(date)
+    context = runtime_context(root)
+    if successor:
+        vocab = successor_ids(pathlib.Path(context["package"]))
+        if successor not in vocab:
+            raise ValueError(f"successor {successor!r} is not a live rule or skill")
+    missing = [sid for sid in sources
+               if not (root / f"{sid}.md").is_file()
+               or (root / f"{sid}.md").is_symlink()]
+    if missing:
+        raise ValueError(f"not in corpus: {missing}")
+
+    archive_dir = pathlib.Path(context["archive"]) / date
+    cluster_id = f"prune-{date}-{sources[0]}"
+    citations = []
+    if successor:
+        for sid in sources:
+            for citer in inbound_citers(root, sid, exclude=set(sources)):
+                path = root / citer
+                citations.append({
+                    "file": str(path), "old": f"[[{sid}]]", "new": f"[[{successor}]]",
+                    "sha256_before": full_hash(path),
+                })
+    moves = []
+    for sid in sources:
+        for suffix in (".md", ".evidence.md"):
+            source = root / f"{sid}{suffix}"
+            destination = archive_dir / source.name
+            if source.is_symlink():
+                raise ValueError(f"source must not be a symlink: {source}")
+            if source.exists() and destination.exists():
+                raise ValueError(f"archive collision: {source} and {destination} both exist")
+            if source.is_file() and not source.is_symlink():
+                moves.append({"source": str(source), "destination": str(destination),
+                              "sha256_before": full_hash(source)})
+    manifest_path = archive_dir / "MANIFEST.md"
+    successor_subject = None
+    if successor:
+        rule = pathlib.Path(context["rules"]) / f"{successor}.md"
+        skill = pathlib.Path(context["skills"]) / successor / "SKILL.md"
+        successor_path = rule if rule.is_file() else skill
+        successor_subject = {"path": str(successor_path),
+                             "sha256_before": full_hash(successor_path)}
+    payload = {
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "transaction_id": cluster_id,
+        "context": context,
+        "sources": list(sources),
+        "successor": successor,
+        "successor_subject": successor_subject,
+        "reason": why,
+        "retirement_date": date,
+        "moves": moves,
+        "citations": citations,
+        "manifest": {
+            "path": str(manifest_path),
+            "sha256_before": full_hash(manifest_path) if manifest_path.is_file() else None,
+            "block": build_manifest_block(root, sources, successor, why),
+        },
+    }
+    payload["plan_hash"] = plan_digest(payload)
+    return payload
+
+
+def load_retirement_plan(path):
+    try:
+        payload = json.loads(pathlib.Path(path).read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(f"cannot read retirement plan: {e}") from e
+    if not isinstance(payload, dict) or payload.get("schema_version") != PLAN_SCHEMA_VERSION:
+        raise ValueError("unsupported or malformed retirement plan schema")
+    expected_keys = {"schema_version", "transaction_id", "context", "sources", "successor",
+                     "successor_subject",
+                     "reason", "retirement_date", "moves", "citations", "manifest", "plan_hash"}
+    if set(payload) != expected_keys:
+        raise ValueError("retirement plan fields do not match schema")
+    if not isinstance(payload.get("plan_hash"), str) or payload["plan_hash"] != plan_digest(payload):
+        raise ValueError("retirement plan hash does not match its contents")
+    context = payload.get("context")
+    if not isinstance(context, dict) or set(context) != {
+            "config", "corpus", "rules", "skills", "ledger", "claims", "archive", "package"}:
+        raise ValueError("retirement plan context is incomplete")
+    return payload
+
+
+def apply_retirement_plan(payload, apply_):
+    """Rebuild and compare the plan before the first effect, then execute it."""
+    root = pathlib.Path(payload["context"]["corpus"])
+    try:
+        current = create_retirement_plan(
+            root, payload["sources"], payload["successor"], payload["reason"],
+            payload["retirement_date"])
+    except (ValueError, UnsafeSourceId) as e:
+        print(f"retire: plan precondition failed: {e}", file=sys.stderr)
+        return 3
+    if current != payload:
+        print("retire: plan precondition failed: source, citation, destination, "
+              "manifest, or context changed since review", file=sys.stderr)
+        return 3
+    if not apply_:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        print("VALIDATED ONLY — pass --apply with --apply-plan to perform effects")
+        return 0
+    return run(Store(root), root, payload["sources"], payload["successor"],
+               payload["reason"], payload["retirement_date"], True,
+               reviewed_plan=payload)
+
+
+def check_retirement_date(value):
+    """Return an exact real YYYY-MM-DD date string or raise ValueError."""
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError(f"date must be exact YYYY-MM-DD, got {value!r}")
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as e:
+        raise ValueError(f"invalid calendar date {value!r}") from e
+    if parsed.isoformat() != value:
+        raise ValueError(f"date must be canonical YYYY-MM-DD, got {value!r}")
+    return value
 
 
 def inbound_citers(root, sid, exclude):
@@ -64,9 +214,11 @@ def inbound_citers(root, sid, exclude):
 def build_manifest_block(root, sources, successor, why):
     """The section this transaction appends — spec §5 format, §4 for no-successor."""
     rows = []
+    line_counts = []
     for sid in sources:
         p = root / f"{sid}.md"
         lines = len(p.read_text().splitlines()) if p.exists() else "?"
+        line_counts.append(lines if isinstance(lines, int) else 0)
         rows.append(f"| `{sid}.md` | {lines} | {why or '—'} |")
     if successor:
         head = f"## → {successor}"
@@ -75,6 +227,15 @@ def build_manifest_block(root, sources, successor, why):
         head = "## → (no successor)"
         cols = "| retired file | lines | why retired |"
     block = [head, "", cols, "|---|---|---|", *rows, ""]
+    if successor:
+        # Spec §5: MANIFEST needs a line-accounting sentence and the rationale
+        # for why the retired sources were one lesson — without these the
+        # table alone doesn't say what changed or justify collapsing them.
+        total = sum(line_counts)
+        block.append(f"{total} lines over {len(sources)} file(s) → "
+                      f"carried by {successor}.")
+        block.append(f"**Why they were one lesson.** {why or '—'}")
+        block.append("")
     if not successor:
         for sid in sources:
             citers = inbound_citers(root, sid, exclude=set(sources))
@@ -101,7 +262,15 @@ def step_archive(tx, root, apply_):
         for name in (f"{sid}.md", f"{sid}.evidence.md"):
             src, dst = root / name, adir / name
             print(f"  mv {name} -> {adir.name}/" + ("" if src.exists() else "  (absent)"))
-            if apply_ and src.exists() and not dst.exists():
+            if apply_ and src.exists() and dst.exists():
+                # A genuine replay after rename is `src absent, dst present`.
+                # Both present is always a collision, even when the bytes are
+                # equal: skipping it leaves the source live and used to allow
+                # the transaction to report COMMITTED without retiring it.
+                raise RuntimeError(
+                    f"archive collision mid-transaction: {src} and {dst} "
+                    f"both exist — refusing to skip")
+            elif apply_ and src.exists() and not dst.exists():
                 src.rename(dst)
 
 
@@ -120,9 +289,89 @@ def step_manifest(tx, apply_):
         manifest_append(mp, tx.cluster_id, tx.d["manifest_rows"][0])
 
 
-def run(store, root, sources, successor, why, date, apply_):
+def verify_archive_postconditions(tx, root):
+    """Prove the archive effect before allowing COMMITTED.
+
+    Preflight protects the start state; this protects the promised end state
+    after every intervening effect and any concurrent filesystem change.
+    """
+    adir = pathlib.Path(tx.d["archive_dir"])
+    expected = tx.d.get("archive_hashes") or {}
+    for sid in tx.d["sources"]:
+        check_source_id(sid)
+        for index, name in enumerate((f"{sid}.md", f"{sid}.evidence.md")):
+            src, dst = root / name, adir / name
+            if src.exists() or src.is_symlink():
+                raise RuntimeError(
+                    f"archive postcondition failed: source still live: {src}")
+            expected_hash = expected.get(name)
+            # The lesson is mandatory. Evidence is optional unless the plan
+            # recorded that it existed before the move.
+            if index == 0 or expected_hash is not None:
+                if not dst.is_file() or dst.is_symlink():
+                    raise RuntimeError(
+                        f"archive postcondition failed: destination missing or "
+                        f"not a regular file: {dst}")
+                if expected_hash is not None and content_hash(dst) != expected_hash:
+                    raise RuntimeError(
+                        f"archive postcondition failed: destination hash changed: {dst}")
+    return True
+
+
+def verify_citation_postconditions(tx, root):
+    for filename, old, new in tx.d.get("citations") or []:
+        path = pathlib.Path(filename)
+        try:
+            path.resolve().relative_to(pathlib.Path(root).resolve())
+        except ValueError as exc:
+            raise RuntimeError(f"citation postcondition escapes corpus: {path}") from exc
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError(f"citation postcondition file missing or unsafe: {path}")
+        text = path.read_text()
+        if old in text or new not in text:
+            raise RuntimeError(
+                f"citation postcondition failed: expected {new!r} and no {old!r} in {path}")
+    return True
+
+
+def verify_manifest_postconditions(tx):
+    path = pathlib.Path(tx.d["manifest_path"])
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError(f"MANIFEST postcondition missing or unsafe: {path}")
+    text = path.read_text()
+    opening = f"<!-- tx:{tx.cluster_id} -->"
+    closing = f"<!-- /tx:{tx.cluster_id} -->"
+    block = tx.d["manifest_rows"][0]
+    if text.count(opening) != 1 or text.count(closing) != 1 or block.rstrip() not in text:
+        raise RuntimeError(f"MANIFEST postcondition failed for {tx.cluster_id}: {path}")
+    return True
+
+
+def run(store, root, sources, successor, why, date, apply_, reviewed_plan=None):
+    # Refuse an unsafe id BEFORE anything (transaction, archive dir, MANIFEST
+    # path) is built from it — a source id becomes `root / f"{sid}.md"` and
+    # `claims / sid` downstream, and pathlib's `/` silently discards `root`
+    # for an absolute sid, escaping the corpus entirely.
+    try:
+        for sid in sources:
+            check_source_id(sid)
+    except UnsafeSourceId as e:
+        print(f"retire: {e} — refusing", file=sys.stderr)
+        return 2
+
+    try:
+        date = check_retirement_date(date)
+    except ValueError as e:
+        print(f"retire: {e} — refusing", file=sys.stderr)
+        return 2
+
     cluster = f"prune-{date}-{sources[0]}"
-    adir = root.parent / "Archive" / date
+    archive_root = root.parent / "Archive"
+    adir = archive_root / date
+    if adir.resolve().parent != archive_root.resolve():
+        print(f"retire: archive destination escapes {archive_root}: {adir} — "
+              f"refusing", file=sys.stderr)
+        return 2
     mpath = adir / "MANIFEST.md"
 
     # A successor must be a bare rule stem or skill dir name — the exact
@@ -142,14 +391,40 @@ def run(store, root, sources, successor, why, date, apply_):
                   f"refusing", file=sys.stderr)
             return 4
 
-    missing = [s for s in sources if not (root / f"{s}.md").exists()]
+    missing = [s for s in sources
+               if not (root / f"{s}.md").is_file()
+               or (root / f"{s}.md").is_symlink()]
     if missing:
         print(f"retire: not in corpus: {missing} — refusing", file=sys.stderr)
+        return 3
+    unsafe_evidence = []
+    for sid in sources:
+        evidence = root / f"{sid}.evidence.md"
+        if evidence.is_symlink() or (evidence.exists() and not evidence.is_file()):
+            unsafe_evidence.append(str(evidence))
+    if unsafe_evidence:
+        print(f"retire: evidence source must be a regular file when present: "
+              f"{unsafe_evidence} — refusing", file=sys.stderr)
         return 3
     claimed = store.claimed_ids() & set(sources)
     if claimed:
         print(f"retire: already claimed: {sorted(claimed)} — refusing", file=sys.stderr)
         return 3
+
+    # ANY PRE-EXISTING archive destination paired with a live source must refuse
+    # before the transaction opens — step_archive's rename is skip-on-exists,
+    # so proceeding would leave the live source in place, keep the stale
+    # archive bytes, and still let the transaction reach COMMITTED claiming
+    # the retirement happened. Byte equality does not make this a replay: after
+    # a successful rename the source is absent.
+    if apply_:
+        for sid in sources:
+            for name in (f"{sid}.md", f"{sid}.evidence.md"):
+                src, dst = root / name, adir / name
+                if src.exists() and dst.exists():
+                    print(f"retire: archive collision at {dst} while {src} is "
+                          f"still live — refusing", file=sys.stderr)
+                    return 3
 
     # Citations plan + manifest block are computed BEFORE anything moves, and
     # recorded in the ledger, so --resume needs no recomputation.
@@ -159,6 +434,22 @@ def run(store, root, sources, successor, why, date, apply_):
             for citer in inbound_citers(root, sid, exclude=set(sources)):
                 triples.append([str(root / citer), f"[[{sid}]]", f"[[{successor}]]"])
     block = build_manifest_block(root, sources, successor, why)
+    archive_hashes = {}
+    for sid in sources:
+        for name in (f"{sid}.md", f"{sid}.evidence.md"):
+            source_path = root / name
+            if source_path.is_file() and not source_path.is_symlink():
+                archive_hashes[name] = content_hash(source_path)
+
+    if reviewed_plan is not None:
+        try:
+            if create_retirement_plan(root, sources, successor, why, date) != reviewed_plan:
+                print("retire: reviewed plan changed immediately before transaction; refusing",
+                      file=sys.stderr)
+                return 3
+        except (ValueError, UnsafeSourceId) as e:
+            print(f"retire: reviewed plan is no longer applicable: {e}", file=sys.stderr)
+            return 3
 
     print(f"{'APPLY' if apply_ else 'DRY RUN'}  cluster={cluster}")
     if not apply_:
@@ -170,20 +461,38 @@ def run(store, root, sources, successor, why, date, apply_):
 
     tx = PruneTransaction.begin(store, cluster, sources)
     tx.claim()
-    tx.record_plan(adir, triples, mpath, [block])
+    tx.record_plan(adir, triples, mpath, [block], archive_hashes=archive_hashes)
     tx.archived(str(adir))
     step_archive(tx, root, apply_)
     tx.citations_repointed(triples)
     step_repoint(tx, apply_)
+    try:
+        verify_citation_postconditions(tx, root)
+    except RuntimeError as e:
+        print(f"retire: {e} — refusing next transition; resume or rollback required",
+              file=sys.stderr)
+        return 5
     tx.manifest_updated([block], manifest_path=mpath)
     step_manifest(tx, apply_)
+    try:
+        verify_manifest_postconditions(tx)
+        verify_archive_postconditions(tx, root)
+    except RuntimeError as e:
+        print(f"retire: {e} — refusing COMMITTED; resume or rollback required",
+              file=sys.stderr)
+        return 5
     tx.commit(datetime.datetime.now(datetime.timezone.utc).isoformat())
     print(f"COMMITTED {cluster}")
     return 0
 
 
 def resume(store, root, cluster, apply_):
-    tx = PruneTransaction.load(store, cluster)
+    try:
+        tx = PruneTransaction.load(store, cluster)
+    except InvalidTransactionRecord as e:
+        print(f"retire: invalid persisted transaction: {e} — refusing",
+              file=sys.stderr)
+        return 3
     if tx is None:
         print(f"retire: no transaction {cluster!r}", file=sys.stderr)
         return 3
@@ -215,11 +524,31 @@ def resume(store, root, cluster, apply_):
         elif s == "CITATIONS_REPOINTED":
             tx.citations_repointed(tx.d.get("citations") or [])
             step_repoint(tx, True)
+            try:
+                verify_citation_postconditions(tx, root)
+            except RuntimeError as e:
+                print(f"retire: {e} — refusing next transition; resume or rollback required",
+                      file=sys.stderr)
+                return 5
         elif s == "MANIFEST_UPDATED":
             tx.manifest_updated(tx.d["manifest_rows"],
                                 manifest_path=tx.d["manifest_path"])
             step_manifest(tx, True)
+            try:
+                verify_manifest_postconditions(tx)
+            except RuntimeError as e:
+                print(f"retire: {e} — refusing COMMITTED; resume or rollback required",
+                      file=sys.stderr)
+                return 5
         elif s == "COMMITTING":
+            try:
+                verify_citation_postconditions(tx, root)
+                verify_manifest_postconditions(tx)
+                verify_archive_postconditions(tx, root)
+            except RuntimeError as e:
+                print(f"retire: {e} — refusing COMMITTED; resume or rollback "
+                      f"required", file=sys.stderr)
+                return 5
             tx.commit(tx.d.get("watermark_value")
                       or datetime.datetime.now(datetime.timezone.utc).isoformat())
     print(f"COMMITTED {cluster}")
@@ -230,6 +559,7 @@ def main(argv):
     args = list(argv)
     sources, successor, why, date = [], None, "", None
     mode, cluster, apply_, root = "run", None, False, CORPUS
+    write_plan, apply_plan = None, None
     no_succ = False
     while args:
         a = args.pop(0)
@@ -245,6 +575,10 @@ def main(argv):
             root = pathlib.Path(args.pop(0))
         elif a == "--apply":
             apply_ = True
+        elif a == "--write-plan":
+            write_plan = pathlib.Path(args.pop(0))
+        elif a == "--apply-plan":
+            apply_plan = pathlib.Path(args.pop(0))
         elif a in ("--resume", "--rollback"):
             mode, cluster = a.lstrip("-"), args.pop(0)
         elif a.startswith("-"):
@@ -252,11 +586,30 @@ def main(argv):
             return 2
         else:
             sources.append(a)
+    if apply_plan is not None:
+        # A reviewed plan is the sole authority. Mixing free-form identifiers,
+        # roots, or decisions with it would quietly change what was approved.
+        if sources or successor is not None or no_succ or why or date is not None \
+                or root != CORPUS or write_plan is not None or mode != "run":
+            print("retire: --apply-plan accepts only its plan file and optional --apply",
+                  file=sys.stderr)
+            return 2
+        try:
+            payload = load_retirement_plan(apply_plan)
+        except ValueError as e:
+            print(f"retire: {e}", file=sys.stderr)
+            return 2
+        return apply_retirement_plan(payload, apply_)
     store = Store(root)
     if mode == "resume":
         return resume(store, root, cluster, apply_)
     if mode == "rollback":
-        tx = PruneTransaction.load(store, cluster)
+        try:
+            tx = PruneTransaction.load(store, cluster)
+        except InvalidTransactionRecord as e:
+            print(f"retire: invalid persisted transaction: {e} — refusing",
+                  file=sys.stderr)
+            return 3
         if tx is None:
             print(f"retire: no transaction {cluster!r}", file=sys.stderr)
             return 3
@@ -268,6 +621,21 @@ def main(argv):
     if not sources or (successor is None) == (not no_succ):
         print(__doc__)
         return 2
+    if write_plan is not None:
+        if apply_:
+            print("retire: --write-plan cannot be combined with --apply", file=sys.stderr)
+            return 2
+        try:
+            payload = create_retirement_plan(
+                root, sources, successor, why,
+                date or datetime.date.today().isoformat())
+        except (ValueError, UnsafeSourceId) as e:
+            print(f"retire: cannot create plan: {e}", file=sys.stderr)
+            return 3
+        write_plan.parent.mkdir(parents=True, exist_ok=True)
+        write_plan.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        print(f"WROTE {write_plan}  sha256={payload['plan_hash']}")
+        return 0
     return run(store, root, sources, successor, why,
                date or datetime.date.today().isoformat(), apply_)
 
@@ -287,6 +655,8 @@ def _home(tmp):
 
 
 def selftest():
+    import json
+    import subprocess
     import tempfile
     ok = True
 
@@ -391,6 +761,318 @@ def selftest():
         check("corpus file set == before, minus the committed retirement",
               {p.name for p in root.glob("*.md")}
               == before - {"dup.md", "dup.evidence.md"})
+
+    # --- source-id path escape refused before anything is touched ---------
+    with tempfile.TemporaryDirectory() as tmp:
+        home, root = _home(tmp)
+        st = Store(root)
+        sentinel = pathlib.Path(tmp) / "victim.txt"
+        sentinel.write_text("do not touch\n")
+        before = {p.name for p in root.glob("*.md")}
+        for bad_sources in (["dup", str(pathlib.Path(tmp) / "escaped")],
+                             ["dup", "../evil"]):
+            rc = run(st, root, bad_sources, "testing", "x",
+                     "2026-07-31", apply_=True)
+            check(f"unsafe id in {bad_sources} refused (exit 2)", rc == 2)
+        check("nothing archived for the refused runs",
+              not (root.parent / "Archive/2026-07-31").exists())
+        check("corpus untouched by the refused runs",
+              {p.name for p in root.glob("*.md")} == before)
+        check("sentinel outside the corpus untouched",
+              sentinel.read_text() == "do not touch\n")
+        check("nothing claimed by the refused runs", st.claimed_ids() == set())
+        # RED probe: neuter the id check in run() and confirm it was the
+        # thing stopping the escape — a green refusal on live code proves
+        # nothing if this call path never reaches check_source_id.
+        _mod = sys.modules[__name__]
+        original = _mod.check_source_id
+        _mod.check_source_id = lambda sid: sid  # neuter
+        try:
+            rc = run(st, root, ["dup", "../evil"], "testing", "x",
+                     "2026-07-31", apply_=True)
+            neutered_proceeded = rc != 2
+        finally:
+            _mod.check_source_id = original
+        check("RED probe: neutering check_source_id lets an unsafe id "
+              "proceed past the refusal (proves the guard, when live, is "
+              "what stops it)", neutered_proceeded)
+
+    # `date` is also a path component (`Archive / date`) and must be parsed,
+    # not trusted because the help text happens to say YYYY-MM-DD.
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        st = Store(root)
+        escaped_archive = pathlib.Path(tmp) / "outside-archive"
+        rc = run(st, root, ["dup"], "testing", "x",
+                 str(escaped_archive), apply_=True)
+        check("absolute --date is rejected before path construction", rc == 2)
+        check("bad date performs zero source/archive/ledger effects",
+              (root / "dup.md").exists()
+              and not (escaped_archive / "dup.md").exists()
+              and st.open_transactions() == [])
+        for bad_date in ("../2026-07-31", "2026/07/31", "2026-02-30",
+                         "2026-7-1", "2026-07-31-extra"):
+            check(f"invalid date {bad_date!r} rejected",
+                  run(st, root, ["dup"], "testing", "x", bad_date,
+                      apply_=False) == 2)
+        check("valid leap-day date accepted",
+              run(st, root, ["dup"], "testing", "x", "2024-02-29",
+                  apply_=False) == 0)
+
+    # Persisted input is still input. A legacy, corrupt, or hand-edited
+    # transaction must be validated when loaded, before resume joins a source
+    # id to any path. This CLI fixture starts at ARCHIVED because that is the
+    # first replay state that performs the move immediately.
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        sentinel = root.parent / "victim.md"
+        sentinel.write_text("outside corpus sentinel\n")
+        adir = root.parent / "Archive/2026-07-31"
+        adir.mkdir(parents=True)
+        ledger_dir = root / ".distill/ledger"
+        ledger_dir.mkdir(parents=True)
+        entry = {
+            "cluster_id": "replay-unsafe", "state": "ARCHIVED",
+            "sources": ["../victim"],
+            "history": ["DISCOVERED", "CLAIMED", "ARCHIVED"],
+            "artifact": None, "artifact_hash_before": None,
+            "citations": [], "archive_dir": str(adir),
+            "manifest_rows": ["fixture"],
+            "manifest_path": str(adir / "MANIFEST.md"),
+            "watermark_before": None, "reason": None,
+        }
+        ledger_path = ledger_dir / "replay-unsafe.json"
+        ledger_path.write_text(json.dumps(entry))
+        proc = subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).resolve()),
+             "--resume", "replay-unsafe", "--root", str(root), "--apply"],
+            capture_output=True, text=True)
+        after = json.loads(ledger_path.read_text())
+        check("unsafe source in a persisted transaction is rejected by the CLI",
+              proc.returncode == 3 and "unsafe source id" in proc.stderr
+              and "Traceback" not in proc.stderr)
+        check("rejected replay leaves the outside sentinel byte-identical",
+              sentinel.is_file()
+              and sentinel.read_text() == "outside corpus sentinel\n")
+        check("rejected replay performs zero archive/MANIFEST/ledger effects",
+              not (adir.parent / "victim.md").exists()
+              and not (adir / "MANIFEST.md").exists()
+              and after["state"] == "ARCHIVED")
+
+    # --- archive collision: pre-existing destination with different bytes --
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        st = Store(root)
+        adir = root.parent / "Archive/2026-07-31"
+        adir.mkdir(parents=True)
+        (adir / "dup.md").write_bytes((root / "dup.md").read_bytes())
+        rc = run(st, root, ["dup"], "testing", "x", "2026-07-31",
+                 apply_=True)
+        check("identical pre-existing archive destination is still a collision",
+              rc == 3)
+        check("identical collision cannot report retirement while source is live",
+              (root / "dup.md").exists()
+              and PruneTransaction.load(st, "prune-2026-07-31-dup") is None)
+
+    # Preflight alone cannot prove completion: another effect or concurrent
+    # actor can recreate a source after the move. Inject that mutation after
+    # MANIFEST write and require the commit boundary to detect it.
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        st = Store(root)
+        original_step_manifest = globals()["step_manifest"]
+
+        def resurrect_source(tx, apply_):
+            original_step_manifest(tx, apply_)
+            if apply_:
+                (root / "dup.md").write_text("reappeared before commit\n")
+
+        globals()["step_manifest"] = resurrect_source
+        try:
+            rc = run(st, root, ["dup"], "testing", "x", "2026-07-31",
+                     apply_=True)
+        finally:
+            globals()["step_manifest"] = original_step_manifest
+        tx = PruneTransaction.load(st, "prune-2026-07-31-dup")
+        check("pre-COMMITTED invariant rejects a source that reappeared",
+              rc == 5)
+        check("failed completion assertion leaves an open recoverable transaction",
+              tx is not None and tx.d["state"] == "MANIFEST_UPDATED"
+              and st.claimed_ids() == {"dup"})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, root = _home(tmp)
+        st = Store(root)
+        adir = root.parent / "Archive/2026-07-31"
+        adir.mkdir(parents=True)
+        (adir / "dup.md").write_text("# an older, DIFFERENT archived copy\n")
+        live_before = (root / "dup.md").read_text()
+        rc = run(st, root, ["dup"], "testing", "x", "2026-07-31", apply_=True)
+        check("archive collision refused (exit 3)", rc == 3)
+        check("live source still present after refusal", (root / "dup.md").exists())
+        check("live source bytes unchanged", (root / "dup.md").read_text() == live_before)
+        check("old archive bytes intact (not overwritten)",
+              (adir / "dup.md").read_text() == "# an older, DIFFERENT archived copy\n")
+        check("no COMMITTED ledger record for the refused cluster",
+              recover(st) == [] and st.claimed_ids() == set())
+        # RED probe: exercise step_archive directly with both src and dst
+        # present and differing bytes, bypassing run()'s pre-flight entirely —
+        # proves the fail-closed RuntimeError branch inside step_archive is
+        # reachable on its own, not merely unreachable dead code.
+        tx = PruneTransaction.begin(st, "prune-2026-07-31-dup-direct", ["dup"])
+        tx.claim()
+        tx.record_plan(adir, [], adir / "MANIFEST.md", ["x"])
+        tx.archived(str(adir))
+        try:
+            step_archive(tx, root, True)
+            step_archive_raised = False
+        except RuntimeError:
+            step_archive_raised = True
+        check("RED probe: step_archive itself refuses a mid-transaction "
+              "collision (fail-closed even if the pre-flight is bypassed)",
+              step_archive_raised)
+        tx.rollback("test cleanup")
+
+    # --- MANIFEST successor block: line-accounting + rationale -------------
+    with tempfile.TemporaryDirectory() as tmp:
+        home, root = _home(tmp)
+        block = build_manifest_block(root, ["dup"], "testing",
+                                      "both covered the same failure mode")
+        dup_lines = len((root / "dup.md").read_text().splitlines())
+        check("MANIFEST successor block has the line-accounting sentence",
+              f"{dup_lines} lines over 1 file(s) → carried by testing." in block)
+        check("MANIFEST successor block has the Why-they-were-one-lesson line",
+              "**Why they were one lesson.** both covered the same failure mode"
+              in block)
+        no_succ_block = build_manifest_block(root, ["dead"], None, "gone")
+        check("no-successor block is unchanged (no line-accounting sentence)",
+              "carried by" not in no_succ_block
+              and "Why they were one lesson" not in no_succ_block)
+
+    # --- machine-readable review plan -------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        plan_path = pathlib.Path(tmp) / "retirement-plan.json"
+        rc = main(["dup", "--successor", "testing", "--why", "same lesson",
+                   "--date", "2026-08-03", "--root", str(root),
+                   "--write-plan", str(plan_path)])
+        plan = load_retirement_plan(plan_path)
+        check("write-plan creates a hashed versioned plan without effects",
+              rc == 0 and plan["schema_version"] == 1
+              and plan["plan_hash"] == plan_digest(plan)
+              and (root / "dup.md").exists()
+              and not (root / ".distill").exists())
+        check("plan records all runtime roots and exact effect inputs",
+              set(plan["context"]) == {"config", "corpus", "rules", "skills",
+                                       "ledger", "claims", "archive", "package"}
+              and plan["moves"] and plan["citations"]
+              and plan["manifest"]["block"].startswith("## → testing"))
+        check("apply-plan without --apply validates but performs no effects",
+              main(["--apply-plan", str(plan_path)]) == 0
+              and (root / "dup.md").exists())
+
+        original = (root / "dup.md").read_text()
+        (root / "dup.md").write_text(original + "changed after review\n")
+        check("changed source invalidates the reviewed plan before any effect",
+              main(["--apply-plan", str(plan_path), "--apply"]) == 3
+              and (root / "dup.md").exists()
+              and not (root / ".distill").exists())
+        (root / "dup.md").write_text(original)
+        check("apply-plan rejects mixed free-form identifiers",
+              main(["--apply-plan", str(plan_path), "dup", "--apply"]) == 2)
+        (root.parent.parent.parent / "rules/testing.md").write_text("changed successor\n")
+        check("changed successor artifact invalidates the reviewed plan",
+              main(["--apply-plan", str(plan_path), "--apply"]) == 3
+              and (root / "dup.md").exists())
+        (root.parent.parent.parent / "rules/testing.md").write_text("the covering rule\n")
+        check("unchanged reviewed plan applies and commits",
+              main(["--apply-plan", str(plan_path), "--apply"]) == 0
+              and not (root / "dup.md").exists()
+              and (root.parent / "Archive/2026-08-03/dup.md").exists())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        plan = create_retirement_plan(root, ["dup"], "testing", "x", "2026-08-03")
+        plan["reason"] = "tampered after hashing"
+        tampered = pathlib.Path(tmp) / "tampered.json"
+        tampered.write_text(json.dumps(plan))
+        try:
+            load_retirement_plan(tampered)
+            rejected = False
+        except ValueError:
+            rejected = True
+        check("plan-content tampering is rejected by its digest", rejected)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        outside = pathlib.Path(tmp) / "outside.md"
+        outside.write_text("outside")
+        (root / "dup.md").unlink()
+        (root / "dup.md").symlink_to(outside)
+        try:
+            create_retirement_plan(root, ["dup"], "testing", "x", "2026-08-03")
+            symlink_rejected = False
+        except ValueError:
+            symlink_rejected = True
+        check("mandatory lesson symlink is rejected while planning", symlink_rejected)
+        check("rejected symlink plan leaves its target byte-identical",
+              outside.read_text() == "outside")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        st = Store(root)
+        adir = root.parent / "Archive/2026-08-03"
+        hashes = {"dup.md": content_hash(root / "dup.md"),
+                  "dup.evidence.md": content_hash(root / "dup.evidence.md")}
+        tx = PruneTransaction.begin(st, "prune-2026-08-03-dup", ["dup"])
+        tx.claim()
+        tx.record_plan(adir,
+                       [[str(root / "citer.md"), "[[dup]]", "[[testing]]"]],
+                       adir / "MANIFEST.md", ["fixture"], archive_hashes=hashes)
+        tx.archived(str(adir))
+        step_archive(tx, root, True)
+        tx.citations_repointed(tx.d["citations"])
+        (root / "citer.md").write_text("citation changed after intent\n")
+        rc = resume(st, root, tx.cluster_id, apply_=True)
+        loaded = PruneTransaction.load(st, tx.cluster_id)
+        check("missing promised citation blocks the next transition and commit",
+              rc == 5 and loaded.d["state"] == "CITATIONS_REPOINTED"
+              and not (adir / "MANIFEST.md").exists())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        outside = pathlib.Path(tmp) / "outside-evidence.md"
+        outside.write_text("outside evidence")
+        (root / "dup.evidence.md").unlink()
+        (root / "dup.evidence.md").symlink_to(outside)
+        rc = run(Store(root), root, ["dup"], "testing", "x", "2026-08-03", True)
+        check("direct retirement rejects an evidence-archive symlink before effects",
+              rc == 3 and (root / "dup.md").exists()
+              and outside.read_text() == "outside evidence")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        st = Store(root)
+        adir = root.parent / "Archive/2026-08-03"
+        block = build_manifest_block(root, ["dup"], "testing", "x")
+        hashes = {"dup.md": content_hash(root / "dup.md"),
+                  "dup.evidence.md": content_hash(root / "dup.evidence.md")}
+        tx = PruneTransaction.begin(st, "prune-2026-08-03-dup", ["dup"])
+        tx.claim()
+        tx.record_plan(adir,
+                       [[str(root / "citer.md"), "[[dup]]", "[[testing]]"]],
+                       adir / "MANIFEST.md", [block], archive_hashes=hashes)
+        tx.archived(str(adir)); step_archive(tx, root, True)
+        tx.citations_repointed(tx.d["citations"]); step_repoint(tx, True)
+        tx.manifest_updated([block], manifest_path=adir / "MANIFEST.md"); step_manifest(tx, True)
+        tx._record("COMMITTING", watermark_value="W")
+        (root / "citer.md").write_text("corrupt after COMMITTING\n")
+        (adir / "MANIFEST.md").unlink()
+        rc = resume(st, root, tx.cluster_id, apply_=True)
+        loaded = PruneTransaction.load(st, tx.cluster_id)
+        check("COMMITTING replay rechecks citation and MANIFEST postconditions",
+              rc == 5 and loaded.d["state"] == "COMMITTING"
+              and st.claimed_ids() == {"dup"})
 
     print("SELFTEST:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
