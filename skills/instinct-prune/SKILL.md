@@ -93,6 +93,11 @@ Per candidate:
    covering artifact (the format's drift tracker) and record a DEFER "blocked on liveness —
    retire when it stops accruing". Ruled this way three times 2026-08-01/02 (green-guards,
    probe-reality, config-self-modification); KCS "reuse is review" is the outside precedent.
+   You do not have to watch for that condition by hand: a DEFER stores the lesson's
+   `evidence_count` at ruling time, and when it has not moved for `--no-accrual-days`
+   (default 30) shortlist prints `DEFER condition MET — take to retirement review`. That is
+   an announcement, not a decision — the file is retired only by a fresh Phase C and a
+   Phase D transaction.
 5. Only here, if freshness matters, does the gate-3-shaped docs check run — against a set
    already narrowed to a handful.
 6. **Record the verdict** when the candidate stays live (DROP = flag is an artifact /
@@ -103,9 +108,14 @@ Per candidate:
      --rank <n> --gate1 <flag> --why "<challengeable ruling>" [--covering <bare stem>]
    ```
 
-   Shortlist subtracts it on future runs — **visibly**, one line per suppression — until
-   any hashed subject changes (new evidence on the instinct, an edit to the covering
-   rule/skill), which re-opens it for fresh review. An accepted retirement needs no
+   Shortlist subtracts it on future runs — **visibly**, one line per suppression — until a
+   hashed subject changes in a way that matters (new evidence on the instinct, an edit to
+   its body, an edit to the covering rule/skill), which re-opens it for fresh review.
+   Rulings written from 2026-08-19 carry `hash_algo: "v2"` and hash the subject *minus* the
+   frontmatter keys `cites`, `last_checked` and `updated`, so a bookkeeping pass no longer
+   re-opens a standing ruling; `evidence_count` is not stripped, because a changed count is
+   accrual. Records without the field keep the old whole-file sensitivity — there is no
+   migration wave, they return as v2 when they are next re-ruled. An accepted retirement needs no
    ruling: retire.py removes the file from the corpus. Design:
    `docs/superpowers/plans/2026-08-01-ruling-ledger-design.md`; ledger:
    `personal/.distill/rulings.jsonl`. Human-initiated only, like everything here.
@@ -149,9 +159,11 @@ own.
 
 ```bash
 python3 "$SKILL_DIR/scripts/retire.py" <id> --successor <rule> \
-  --why "<ruling>" --write-plan /tmp/<id>-retirement.json
+  --why "<ruling>" --rank <n> --gate1 <flag> --gate2 <flag> \
+  --write-plan /tmp/<id>-retirement.json
 python3 "$SKILL_DIR/scripts/retire.py" <id> --no-successor \
-  --why "<ruling>" --write-plan /tmp/<id>-retirement.json
+  --why "<ruling>" --rank <n> --gate1 <flag> --gate2 <flag> \
+  --write-plan /tmp/<id>-retirement.json
 # review the JSON, its exact effects, precondition hashes, recovery path, and plan_hash
 python3 "$SKILL_DIR/scripts/retire.py" \
   --apply-plan /tmp/<id>-retirement.json --apply
@@ -162,6 +174,11 @@ python3 "$SKILL_DIR/scripts/retire.py" --rollback <cluster_id> --apply   # undo 
 `--successor` takes the **bare rule stem or skill dir name** (`agents`, not
 `rules/agents.md`) — the vocabulary `dangling_links.py` classifies as SUCCESSOR; retire.py
 refuses anything else (exit 4).
+
+**Pass the shortlist row's `--rank`/`--gate1`/`--gate2`.** They are optional, and omitting
+them writes `rank: null, flags: null` into the committed record — the transaction then says
+what was retired but not which signal proposed it, which is the question every later audit
+asks first. They travel inside the plan digest, so they are part of what you approve.
 
 **Review the generated plan first.** Approval is per transaction and binds its source,
 destination, citation, MANIFEST, context-root, and hash preconditions. `--apply-plan` accepts no
@@ -199,3 +216,8 @@ RETIRED — RETIRED means the marker never got written.
 - The ledger is terminal, claims are released, and archive source/destination hashes verify.
 - Citation and MANIFEST postconditions match the selected successor/no-successor mode.
 - `dangling_links.py` reports the expected successor or INTENT bucket, with no recovery debt.
+- The run is **committed** to the local `~/.claude` repo — both the corpus
+  (`homunculus/instincts/personal/`) and its bookkeeping
+  (`homunculus/instincts/personal/.distill/`), staged by explicit path. An uncommitted run is
+  not done: the next run's shortlist reads the ledger, so unbanked rulings re-surface as
+  candidates. Local repo only — this repo has no remote, and `git push` has nothing to push to.

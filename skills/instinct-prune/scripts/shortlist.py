@@ -160,13 +160,28 @@ def main(argv):
         print(f"  rank {rank}  {fname:<55} {reason}")
     for (rank, fname, _), r in suppressed:
         print(f"  suppressed by ruling {r['ruled']} (DROP): {fname} — {r['why']}")
-    defers = [r for r in (rulings or []) if r["verdict"] == "DEFER"]
+    # Latest DEFER per id only (T3). The ledger stays append-only; a re-ruled
+    # DEFER used to print every superseded record too, each carrying a stale
+    # `[subjects changed]` marker — 10 lines for 3 files.
+    dbase = rbase or ruling.BASE
+    defers = sorted(ruling.latest_defers(rulings),
+                    key=lambda r: (r["ruled"], r["id"]))
     if defers:
         print("\nStanding DEFERs — promises to revisit, shown every run:")
         for r in defers:
-            state = "" if ruling.subjects_valid(r, rbase or ruling.BASE) \
+            state = "" if ruling.subjects_valid(r, dbase) \
                 else "  [subjects changed — re-adjudicate]"
             print(f"  {r['ruled']}  {r['id']} — {r['why']}{state}")
+            # Announce-only. The exit condition is inactivity, evaluated
+            # against the lesson's CURRENT evidence_count; a legacy DEFER
+            # without an accrual block, or an unreadable count, stays manual
+            # and says nothing. This tool never retires.
+            if ruling.defer_condition_met(r, dbase):
+                acc = r["accrual"]
+                print(f"      DEFER condition MET — take to retirement review "
+                      f"(evidence_count still {acc['evidence_count']}, "
+                      f"no accrual for {acc['no_accrual_days']}+ days since "
+                      f"{r['ruled']})")
     print("\nCandidate flags, not verdicts. Phase C verifies each; rank 1 also "
           "waits on ruling R3 (evidence lineage).")
     return 0
@@ -286,6 +301,126 @@ def selftest():
               "0 suppressed by standing rulings" in proc.stdout)
         check("--root end-to-end: candidate still present",
               "dead.md" in proc.stdout)
+
+    # ---- ledger-facing behaviour, end-to-end through a fixture home -------
+    # A real home shape (<home>/homunculus/instincts/personal + .distill), a
+    # real ledger on disk, the real CLI. The ruling ledger's per-record hash
+    # dispatch and the DEFER read side are the two places a silent regression
+    # would suppress or announce the wrong thing.
+    import datetime
+    import json
+    import subprocess
+
+    def fixture_home(tmp, lessons, records):
+        home = pathlib.Path(tmp) / "home"
+        corpus = home / ruling.CORPUS_REL
+        corpus.mkdir(parents=True)
+        for stem, text in lessons.items():
+            (corpus / f"{stem}.md").write_text(text)
+        led = ruling.rulings_path(home)
+        led.parent.mkdir(parents=True, exist_ok=True)
+        led.write_text("".join(json.dumps(r) + "\n" for r in records))
+        return home, corpus
+
+    def run_cli(home, tsv_text, tmp):
+        p = pathlib.Path(tmp) / "in.tsv"
+        p.write_text(tsv_text)
+        return subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).resolve()),
+             "--tsv-file", str(p), "--root", str(home / ruling.CORPUS_REL)],
+            capture_output=True, text=True)
+
+    def lesson_text(evid, checked="2026-08-01"):
+        return ("---\nid: x\nevidence_count: %d\ncites: []\n"
+                "updated: \"2026-08-01\"\nlast_checked: \"%s\"\n---\n"
+                "# lesson\nbody\n" % (evid, checked))
+
+    def drop_rec(stem, home, **extra):
+        path = f"{ruling.CORPUS_REL}/{stem}.md"
+        algo = extra.get("hash_algo", "v1")
+        rec = {"id": stem, "verdict": "DROP", "rank": 2,
+               "flags": {"gate1": "-", "gate2": "-"},
+               "why": f"adjudicated: {stem}", "ruled": "2026-08-01",
+               "subjects": [{"path": path,
+                             "sha256": ruling.subject_hash(home / path, algo)}]}
+        rec.update(extra)
+        return rec
+
+    # Mixed ledger: one v1 record (no hash_algo) and one v2, both live, both
+    # after a bookkeeping-only edit. v1 must re-open, v2 must stay suppressed.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, corpus = fixture_home(
+            tmp, {"legacy-one": lesson_text(3), "modern-one": lesson_text(3)}, [])
+        recs = [drop_rec("legacy-one", home),
+                drop_rec("modern-one", home, hash_algo="v2")]
+        ruling.rulings_path(home).write_text(
+            "".join(json.dumps(r) + "\n" for r in recs))
+        rows = tsv(("legacy-one.md", "30", "0.5", "3", "PARTIAL", "-", "ALL_DEAD"),
+                   ("modern-one.md", "30", "0.5", "3", "PARTIAL", "-", "ALL_DEAD"))
+        out = run_cli(home, rows, tmp).stdout
+        check("mixed ledger: both suppressed while untouched",
+              "2 suppressed by standing rulings" in out)
+        for stem in ("legacy-one", "modern-one"):
+            (corpus / f"{stem}.md").write_text(lesson_text(3, checked="2026-08-19"))
+        out = run_cli(home, rows, tmp).stdout
+        check("v1 record re-opens after a last_checked-only edit "
+              "(old sensitivity preserved — no migration wave)",
+              "rank 2  legacy-one.md" in out)
+        check("v2 record survives a last_checked-only edit (RED)",
+              "suppressed by ruling" in out and "modern-one" in out
+              and "rank 2  modern-one.md" not in out)
+
+    # Standing DEFERs: latest ruling per id only, and the accrual announcement.
+    def defer_rec(stem, home, ruled, why, accrual=True, evid=5, days=30):
+        path = f"{ruling.CORPUS_REL}/{stem}.md"
+        rec = {"id": stem, "verdict": "DEFER", "rank": 1,
+               "flags": {"gate1": "-", "gate2": "-"}, "why": why,
+               "ruled": ruled, "hash_algo": "v2",
+               "subjects": [{"path": path,
+                             "sha256": ruling.subject_hash(home / path, "v2")}]}
+        if accrual:
+            rec["accrual"] = {"evidence_count": evid, "no_accrual_days": days}
+        return rec
+
+    old = (datetime.date.today() - datetime.timedelta(days=40)).isoformat()
+    recent = (datetime.date.today() - datetime.timedelta(days=5)).isoformat()
+    with tempfile.TemporaryDirectory() as tmp:
+        home, corpus = fixture_home(
+            tmp, {"met-one": lesson_text(5), "young-one": lesson_text(5),
+                  "moved-one": lesson_text(9), "legacy-defer": lesson_text(5)},
+            [])
+        ruling.rulings_path(home).write_text("".join(json.dumps(r) + "\n" for r in [
+            defer_rec("met-one", home, "2026-07-01", "superseded first ruling"),
+            defer_rec("met-one", home, old, "latest ruling on met-one"),
+            defer_rec("young-one", home, recent, "ruled too recently"),
+            defer_rec("moved-one", home, old, "lesson kept accruing", evid=5),
+            defer_rec("legacy-defer", home, old, "predates the accrual field",
+                      accrual=False),
+        ]))
+        out = run_cli(home, tsv(
+            ("plain.md", "30", "0.5", "1", "CONVERTED", "-", "CITES_OK")), tmp).stdout
+        check("Standing DEFERs prints one line per id, not one per record (RED)",
+              out.count("met-one —") == 1)
+        check("the LATEST ruling's why is the one shown (RED)",
+              "latest ruling on met-one" in out
+              and "superseded first ruling" not in out)
+        met_line = [l for l in out.splitlines() if "DEFER condition MET" in l]
+        check("condition MET announced for the due DEFER (RED)",
+              len(met_line) == 1)
+        check("the announcement names the exact review handoff (RED)",
+              "DEFER condition MET — take to retirement review" in out)
+        lines = out.splitlines()
+        met_idx = [i for i, l in enumerate(lines) if "DEFER condition MET" in l]
+        check("the MET announcement sits directly under its own DEFER line",
+              len(met_idx) == 1 and "met-one" in lines[met_idx[0] - 1])
+        check("a DEFER ruled 5 days ago is not announced",
+              "young-one" in out and "young-one" not in "".join(met_line))
+        check("a DEFER whose lesson kept accruing is not announced",
+              "moved-one" in out and "moved-one" not in "".join(met_line))
+        check("a legacy DEFER with no accrual block stays manual",
+              "legacy-defer" in out and "legacy-defer" not in "".join(met_line))
+        check("the tool announces only — it never says it retired anything",
+              "retired" not in out.lower())
 
     print("SELFTEST:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

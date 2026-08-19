@@ -247,6 +247,30 @@ New instincts start at confidence 0.3. A `BUMP` adds 0.1 (cap 0.9), increments `
 and appends the new evidence — it does not rewrite the existing action unless this session proved
 that action wrong.
 
+### Trigger-collision check — warn-only, run it before you write
+
+Immediately before writing a new file, grep the candidate's **own `trigger:` strings** — the
+literal phrases you just composed — against the corpus. This is a narrower question than
+**Gate D**, which swept *lesson content* at triage: here you ask whether this trigger line will
+pull a file that already exists.
+
+```bash
+grep -rn -i -F -e "<candidate trigger phrase>" -e "<second phrase>" \
+  ~/.claude/homunculus/instincts/personal/
+```
+
+One phrase per `-e`, fixed-string (`-F`) — a future session greps these strings exactly as
+written, so search them the same way.
+
+- **No hit** — mint the new file.
+- **Hit** — name the colliding file to the user with the matching line, and offer the
+  evidence-append instead: a `BUMP` or `MERGE` onto that file rather than a new id. Two files
+  answering one grep is the retrieval failure this check exists to catch; the future session
+  reads whichever surfaces first and never learns the other exists.
+
+**This check never refuses a capture.** It reports and recommends; the user decides, as
+everywhere else in this skill. If they choose the new file after seeing the collision, write it.
+
 Write instinct files to `~/.claude/homunculus/instincts/personal/`.
 
 ## Definition of done
@@ -257,3 +281,9 @@ Write instinct files to `~/.claude/homunculus/instincts/personal/`.
 - Dropped candidates are named with their failing gate.
 - Nothing is written until the user selects a recommendation; after selection, the result passes
   the `instinct-format` contract and records the new evidence.
+- The capture is **committed** to the local `~/.claude` repo — both the corpus
+  (`homunculus/instincts/personal/`) and its bookkeeping
+  (`homunculus/instincts/personal/.distill/`), staged by explicit path. An uncommitted capture is
+  not done: it survives only in the working tree, where the next session's sweep counts it as
+  saved while a stray checkout drops it. Local repo only — this repo has no remote, and
+  `git push` has nothing to push to.
