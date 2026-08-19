@@ -256,10 +256,37 @@ Full history. The lesson lives in `<id>.md`; this file exists so the pattern
 - The body contains the Symptom, mechanism, action, and evidence required by this contract.
 - `evidence_count` reconciles with visible incidents and the sibling archive is authoritative
   when present.
-- The canonical `scripts/instinct_record.py` parser returns no diagnostics for a completed file.
+- The canonical `scripts/instinct_record.py` parser returns no diagnostics for a completed file,
+  **or its only diagnostic is the `schema_version` one described below.**
 
 Validate completion with:
 
 ```bash
 python3 "$SKILL_DIR/scripts/instinct_record.py" --check <id>.md
 ```
+
+### `required field is missing: schema_version` is the unmigrated state, not a defect
+
+Measured 2026-08-06: **335 of the 364** instinct files lack `schema_version`, and every one of
+them fails `--check` on that single field:
+
+```
+{"valid": false, "diagnostics": [{"code":"missing_field",
+ "message":"required field is missing: schema_version","line":0,"field":"schema_version"}]}
+```
+
+A migrated file behaves normally — `--check auto-mode-classifier-blocks-prod-cloud-writes.md`
+returns `OK: complete instinct record`, exit 0 — so the checker is fine; the corpus is simply
+mid-migration.
+
+**Do not add `schema_version: 2` to silence it.** That number declares the *typed-evidence*
+schema (`- **DATE** \`outcome\` —`), and 274 of these files carry prose entries. Adding the
+field to a prose file makes the lint count it as migrated and skips it forever, which is worse
+than the red line you were trying to clear. Migration is its own change: convert the entries,
+then set the field.
+
+**A red `--check` also tells you nothing about the rest of the file.** The parser short-circuits
+on the first missing required field, so on any of those 335 files this diagnostic masks every
+other defect in the file you just edited. When you need real validation of an unmigrated file,
+check the contract by hand — `trigger` unwrapped, `action` written from a full read,
+`evidence_count` reconciling with the archive.
