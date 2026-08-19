@@ -301,6 +301,29 @@ repo_true_inferred() {
   if [ "$dead" -eq "$total" ]; then echo "ALL_DEAD"; else echo "SOME_DEAD"; fi
 }
 
+# ---------------------------------------------------------------- starvation
+# R1a (2026-08-19 retro): a shortlist that reports "0 candidates" must read as
+# STARVED, never as CLEAN. Most of the corpus is invisible to most ranks —
+# rank 1 only ever sees gate0=CONVERTED files, and the staleness ranks (2/3)
+# only ever see files whose citations a check could actually resolve. Say so
+# in the summary, with numbers, so nobody reads an empty worklist as a clean
+# corpus.
+#
+# Takes the tally path so the selftest drives the SAME code the report uses.
+# Summary branch only — the --tsv contract is frozen at 7 columns.
+STARVED_G2='UNCITED|CITES_NONE|UNVERIFIABLE|CITES_INVALID'
+starvation_report() {
+  local tally=$1 total=$2 blind1 blind2 breakdown
+  blind1=$(cut -f5 "$tally" | grep -cvx 'CONVERTED')
+  blind2=$(cut -f7 "$tally" | grep -cxE "$STARVED_G2")
+  breakdown=$(cut -f7 "$tally" | grep -xE "$STARVED_G2" | sort | uniq -c \
+    | awk '{printf "%s%s %s", (NR>1 ? " + " : ""), $1, $2}')
+  echo "STARVATION — how much of the corpus each rank cannot see"
+  echo "  rank 1 needs gate0=CONVERTED: $blind1 of $total files invisible to it"
+  echo "  ranks 2-3 need a resolvable gate-2 verdict: $blind2 of $total files invisible to them${breakdown:+ ($breakdown)}"
+  echo "  So a shortlist reporting 0 candidates is STARVED, not CLEAN. Widen the gate, do not read it as a clean corpus."
+}
+
 # ---------------------------------------------------------------- selftest
 # Gate 2 only. Every case is a real file on disk scored by the real repo_true,
 # against the real discovered ROOTS — a mocked resolver would prove nothing
@@ -546,8 +569,44 @@ cites: this-is-not-a-list
 body"
   expect cites-scalar-still-invalid CITES_INVALID
 
-  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (19 checks)"; exit 0
-  else echo "selftest: FAIL ($ST_FAIL of 19)"; exit 1; fi
+  # ---- starvation counts (R1a) ----------------------------------------
+  # A synthetic tally in the frozen 7-column shape, through the REAL reporting
+  # function. Re-deriving the counts in the test would assert nothing about
+  # the numbers a reader actually acts on.
+  ST_TALLY="$ST/tally.tsv"
+  {
+    printf 'a\t10\t0.5\t1\tCONVERTED\t-\tCITES_OK\n'
+    printf 'b\t10\t0.5\t1\tPARTIAL\t-\tUNCITED\n'
+    printf 'c\t10\t0.5\t1\tPARTIAL\t-\tCITES_NONE\n'
+    printf 'd\t10\t0.5\t1\tCONVERTED\t-\tALL_DEAD\n'
+    printf 'e\t10\t0.5\t1\tPARTIAL\t-\tALL_DEAD\n'
+  } > "$ST_TALLY"
+  ST_OUT=$(starvation_report "$ST_TALLY" 5)
+  expect_str() {
+    if printf '%s' "$ST_OUT" | grep -qF "$2"; then echo "  PASS  $1"
+    else echo "  FAIL  $1 -> missing: $2"; ST_FAIL=$((ST_FAIL+1)); fi
+  }
+  refute_str() {
+    if printf '%s' "$ST_OUT" | grep -qF "$2"; then
+      echo "  FAIL  $1 -> unexpectedly present: $2"; ST_FAIL=$((ST_FAIL+1))
+    else echo "  PASS  $1"; fi
+  }
+  # 3 of the 5 rows are PARTIAL — invisible to rank 1 no matter their flags.
+  expect_str "starvation: rank-1 blindness is counted and stated" \
+    "rank 1 needs gate0=CONVERTED: 3 of 5 files invisible to it"
+  # UNCITED + CITES_NONE are invisible to the staleness ranks; CITES_OK and
+  # ALL_DEAD are NOT — the gate rendered a verdict on them.
+  expect_str "starvation: gate-2 blindness excludes files the gate could judge" \
+    "ranks 2-3 need a resolvable gate-2 verdict: 2 of 5 files invisible"
+  expect_str "starvation: the blind gate-2 labels are broken out by name" \
+    "(1 CITES_NONE + 1 UNCITED)"
+  expect_str "starvation: names the wrong reading it exists to prevent" \
+    "0 candidates is STARVED, not CLEAN"
+  refute_str "starvation: a verdict-bearing label is never called invisible" \
+    "CITES_OK"
+
+  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (24 checks)"; exit 0
+  else echo "selftest: FAIL ($ST_FAIL of 24)"; exit 1; fi
 fi
 
 # ---------------------------------------------------------------- report
@@ -605,5 +664,7 @@ echo
 echo "GATE 2 — repo-true (do its cited paths still exist?)"; col 7
 echo
 echo "SIZE — files longer than 30 lines (telemetry; the format sets ~30 as a floor, not a cap): $LONG of $TOTAL"
+echo
+starvation_report "$TALLY" "$TOTAL"
 echo
 echo "Gates are CANDIDATE FLAGS, not verdicts. Calibrate against --tsv before moving anything."

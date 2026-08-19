@@ -24,9 +24,14 @@ This driver moves files and edits citers. It does NOT decide: run it only on
 candidates Phase C has verified, and never on rank-1 candidates before ruling
 R3 (evidence lineage) is made.
 
+Provenance (optional, carried plan → committed record): --rank N --gate1 F
+--gate2 F record WHICH shortlist row produced this candidate. Omit them for a
+hand-picked retirement and the record says null — never a guessed rank.
+
 Usage:
   retire.py <id>... (--successor <rule> | --no-successor) [--why "<text>"]
             [--date YYYY-MM-DD] [--root <personal-dir>] [--write-plan FILE]
+            [--rank N] [--gate1 F] [--gate2 F]
   retire.py --apply-plan FILE [--apply]
   retire.py --resume <cluster_id> [--root ...] [--apply]
   retire.py --rollback <cluster_id> [--root ...] [--apply]
@@ -71,8 +76,24 @@ def runtime_context(root):
     return RuntimeContext.from_corpus(root).as_dict()
 
 
-def create_retirement_plan(root, sources, successor, why, date):
+def check_provenance(rank, flags):
+    """Normalise the shortlist provenance carried into the plan. Both halves
+    are optional — a retirement reached by hand has no shortlist row behind it
+    and must record null rather than a guessed rank."""
+    if rank is not None and (not isinstance(rank, int) or isinstance(rank, bool)):
+        raise ValueError(f"rank must be an integer, got {rank!r}")
+    if flags is None:
+        return rank, None
+    if not isinstance(flags, dict) or set(flags) != {"gate1", "gate2"} \
+            or any(not isinstance(v, str) for v in flags.values()):
+        raise ValueError(f"flags must be {{gate1, gate2}} strings, got {flags!r}")
+    return rank, dict(flags)
+
+
+def create_retirement_plan(root, sources, successor, why, date,
+                           rank=None, flags=None):
     """Build the exact, reviewable retirement plan without performing effects."""
+    rank, flags = check_provenance(rank, flags)
     root = pathlib.Path(root).resolve()
     for sid in sources:
         check_source_id(sid)
@@ -130,6 +151,11 @@ def create_retirement_plan(root, sources, successor, why, date):
         "successor_subject": successor_subject,
         "reason": why,
         "retirement_date": date,
+        # Provenance (T4): the shortlist rank and gate flags that produced this
+        # candidate, so a committed retirement can be traced back to the gate
+        # that flagged it. null when the retirement was reached by hand.
+        "rank": rank,
+        "flags": flags,
         "moves": moves,
         "citations": citations,
         "manifest": {
@@ -150,10 +176,11 @@ def load_retirement_plan(path):
     if not isinstance(payload, dict) or payload.get("schema_version") != PLAN_SCHEMA_VERSION:
         raise ValueError("unsupported or malformed retirement plan schema")
     expected_keys = {"schema_version", "transaction_id", "context", "sources", "successor",
-                     "successor_subject",
+                     "successor_subject", "rank", "flags",
                      "reason", "retirement_date", "moves", "citations", "manifest", "plan_hash"}
     if set(payload) != expected_keys:
         raise ValueError("retirement plan fields do not match schema")
+    check_provenance(payload["rank"], payload["flags"])
     if not isinstance(payload.get("plan_hash"), str) or payload["plan_hash"] != plan_digest(payload):
         raise ValueError("retirement plan hash does not match its contents")
     context = payload.get("context")
@@ -169,7 +196,7 @@ def apply_retirement_plan(payload, apply_):
     try:
         current = create_retirement_plan(
             root, payload["sources"], payload["successor"], payload["reason"],
-            payload["retirement_date"])
+            payload["retirement_date"], payload["rank"], payload["flags"])
     except (ValueError, UnsafeSourceId) as e:
         print(f"retire: plan precondition failed: {e}", file=sys.stderr)
         return 3
@@ -183,7 +210,8 @@ def apply_retirement_plan(payload, apply_):
         return 0
     return run(Store(root), root, payload["sources"], payload["successor"],
                payload["reason"], payload["retirement_date"], True,
-               reviewed_plan=payload)
+               reviewed_plan=payload, rank=payload["rank"],
+               flags=payload["flags"])
 
 
 def check_retirement_date(value):
@@ -347,7 +375,13 @@ def verify_manifest_postconditions(tx):
     return True
 
 
-def run(store, root, sources, successor, why, date, apply_, reviewed_plan=None):
+def run(store, root, sources, successor, why, date, apply_, reviewed_plan=None,
+        rank=None, flags=None):
+    try:
+        rank, flags = check_provenance(rank, flags)
+    except ValueError as e:
+        print(f"retire: {e} — refusing", file=sys.stderr)
+        return 2
     # Refuse an unsafe id BEFORE anything (transaction, archive dir, MANIFEST
     # path) is built from it — a source id becomes `root / f"{sid}.md"` and
     # `claims / sid` downstream, and pathlib's `/` silently discards `root`
@@ -443,7 +477,8 @@ def run(store, root, sources, successor, why, date, apply_, reviewed_plan=None):
 
     if reviewed_plan is not None:
         try:
-            if create_retirement_plan(root, sources, successor, why, date) != reviewed_plan:
+            if create_retirement_plan(root, sources, successor, why, date,
+                                      rank, flags) != reviewed_plan:
                 print("retire: reviewed plan changed immediately before transaction; refusing",
                       file=sys.stderr)
                 return 3
@@ -461,7 +496,8 @@ def run(store, root, sources, successor, why, date, apply_, reviewed_plan=None):
 
     tx = PruneTransaction.begin(store, cluster, sources)
     tx.claim()
-    tx.record_plan(adir, triples, mpath, [block], archive_hashes=archive_hashes)
+    tx.record_plan(adir, triples, mpath, [block], archive_hashes=archive_hashes,
+                   rank=rank, flags=flags)
     tx.archived(str(adir))
     step_archive(tx, root, apply_)
     tx.citations_repointed(triples)
@@ -560,11 +596,18 @@ def main(argv):
     sources, successor, why, date = [], None, "", None
     mode, cluster, apply_, root = "run", None, False, CORPUS
     write_plan, apply_plan = None, None
+    rank, gate1, gate2 = None, None, None
     no_succ = False
     while args:
         a = args.pop(0)
         if a == "--successor":
             successor = args.pop(0)
+        elif a == "--rank":
+            rank = args.pop(0)
+        elif a == "--gate1":
+            gate1 = args.pop(0)
+        elif a == "--gate2":
+            gate2 = args.pop(0)
         elif a == "--no-successor":
             no_succ = True
         elif a == "--why":
@@ -588,9 +631,11 @@ def main(argv):
             sources.append(a)
     if apply_plan is not None:
         # A reviewed plan is the sole authority. Mixing free-form identifiers,
-        # roots, or decisions with it would quietly change what was approved.
+        # roots, or decisions with it would quietly change what was approved —
+        # provenance included: the rank the reviewer saw is the rank recorded.
         if sources or successor is not None or no_succ or why or date is not None \
-                or root != CORPUS or write_plan is not None or mode != "run":
+                or root != CORPUS or write_plan is not None or mode != "run" \
+                or rank is not None or gate1 is not None or gate2 is not None:
             print("retire: --apply-plan accepts only its plan file and optional --apply",
                   file=sys.stderr)
             return 2
@@ -621,6 +666,15 @@ def main(argv):
     if not sources or (successor is None) == (not no_succ):
         print(__doc__)
         return 2
+    if rank is not None:
+        try:
+            rank = int(rank)
+        except ValueError:
+            print(f"retire: --rank must be the integer shortlist rank, got "
+                  f"{rank!r}", file=sys.stderr)
+            return 2
+    flags = ({"gate1": gate1 or "-", "gate2": gate2 or "-"}
+             if (gate1 is not None or gate2 is not None) else None)
     if write_plan is not None:
         if apply_:
             print("retire: --write-plan cannot be combined with --apply", file=sys.stderr)
@@ -628,7 +682,7 @@ def main(argv):
         try:
             payload = create_retirement_plan(
                 root, sources, successor, why,
-                date or datetime.date.today().isoformat())
+                date or datetime.date.today().isoformat(), rank, flags)
         except (ValueError, UnsafeSourceId) as e:
             print(f"retire: cannot create plan: {e}", file=sys.stderr)
             return 3
@@ -637,7 +691,8 @@ def main(argv):
         print(f"WROTE {write_plan}  sha256={payload['plan_hash']}")
         return 0
     return run(store, root, sources, successor, why,
-               date or datetime.date.today().isoformat(), apply_)
+               date or datetime.date.today().isoformat(), apply_,
+               rank=rank, flags=flags)
 
 
 # ---------------------------------------------------------------- selftest
@@ -989,6 +1044,55 @@ def selftest():
               main(["--apply-plan", str(plan_path), "--apply"]) == 0
               and not (root / "dup.md").exists()
               and (root.parent / "Archive/2026-08-03/dup.md").exists())
+
+    # --- provenance: which shortlist rank and gate flags led here (T4) -----
+    # The 6 committed records before 2026-08-19 answer "what was retired and
+    # why" but not "what flagged it" — so a retirement cannot be traced back
+    # to the gate that produced it. Carried plan → transaction record; absent
+    # on the older records by design (append-only history, no backfill).
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        plan_path = pathlib.Path(tmp) / "plan.json"
+        rc = main(["dup", "--successor", "testing", "--why", "same lesson",
+                   "--date", "2026-08-03", "--root", str(root),
+                   "--rank", "1", "--gate1", "RULE_DUP", "--gate2", "UNCITED",
+                   "--write-plan", str(plan_path)])
+        plan = load_retirement_plan(plan_path)
+        check("plan carries the shortlist rank (RED)",
+              rc == 0 and plan.get("rank") == 1)
+        check("plan carries the gate flags (RED)",
+              plan.get("flags") == {"gate1": "RULE_DUP", "gate2": "UNCITED"})
+        check("provenance is inside the plan digest (tampering is rejected)",
+              plan_digest(dict(plan, rank=3)) != plan["plan_hash"])
+        check("reviewed plan with provenance applies and commits",
+              main(["--apply-plan", str(plan_path), "--apply"]) == 0
+              and not (root / "dup.md").exists())
+        committed = json.loads(
+            (root / ".distill/ledger/prune-2026-08-03-dup.json").read_text())
+        check("committed transaction record carries rank + flags (RED)",
+              committed["state"] == "COMMITTED" and committed.get("rank") == 1
+              and committed.get("flags") == {"gate1": "RULE_DUP",
+                                             "gate2": "UNCITED"})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        # Provenance is optional: a retirement reached by hand, with no
+        # shortlist row behind it, must still commit — recording null rather
+        # than inventing a rank.
+        check("retirement without provenance still commits",
+              run(Store(root), root, ["dup"], "testing", "hand-picked",
+                  "2026-08-03", True) == 0)
+        committed = json.loads(
+            (root / ".distill/ledger/prune-2026-08-03-dup.json").read_text())
+        check("absent provenance is recorded as null, never guessed",
+              committed.get("rank") is None and committed.get("flags") is None)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _home_dir, root = _home(tmp)
+        check("a non-integer --rank is refused before any effect",
+              main(["dup", "--successor", "testing", "--why", "x", "--date",
+                    "2026-08-03", "--root", str(root), "--rank", "high",
+                    "--apply"]) == 2 and (root / "dup.md").exists())
 
     with tempfile.TemporaryDirectory() as tmp:
         _home_dir, root = _home(tmp)

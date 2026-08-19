@@ -199,3 +199,8 @@ RETIRED — RETIRED means the marker never got written.
 - The ledger is terminal, claims are released, and archive source/destination hashes verify.
 - Citation and MANIFEST postconditions match the selected successor/no-successor mode.
 - `dangling_links.py` reports the expected successor or INTENT bucket, with no recovery debt.
+- The run is **committed** to the local `~/.claude` repo — both the corpus
+  (`homunculus/instincts/personal/`) and its bookkeeping
+  (`homunculus/instincts/personal/.distill/`), staged by explicit path. An uncommitted run is
+  not done: the next run's shortlist reads the ledger, so unbanked rulings re-surface as
+  candidates. Local repo only — this repo has no remote, and `git push` has nothing to push to.

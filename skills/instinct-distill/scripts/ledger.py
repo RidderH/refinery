@@ -657,16 +657,23 @@ class PruneTransaction(Transaction):
     SEQUENCE = PRUNE_FORWARD
 
     def record_plan(self, archive_dir, citations, manifest_path, manifest_rows,
-                    archive_hashes=None):
+                    archive_hashes=None, rank=None, flags=None):
         """Persist the WHOLE retirement plan up front (a same-state re-record,
         legal by 6b-3). Without this, a crash before a step's own record left
         --resume unable to reconstruct intent — the plan lived only in the
-        crashed process's memory."""
+        crashed process's memory.
+
+        `rank`/`flags` are the shortlist provenance behind the retirement —
+        which gate flagged the candidate. Both are null when the retirement was
+        reached by hand, and absent entirely on records written before
+        2026-08-19 (append-only history; nothing is backfilled)."""
         self._record(self.d["state"], archive_dir=str(archive_dir),
                      citations=[list(t) for t in citations],
                      manifest_path=str(manifest_path),
                      manifest_rows=list(manifest_rows),
-                     archive_hashes=dict(archive_hashes or {}))
+                     archive_hashes=dict(archive_hashes or {}),
+                     rank=rank,
+                     flags=dict(flags) if flags else None)
         return self
 
 

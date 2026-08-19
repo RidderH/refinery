@@ -4,8 +4,16 @@ adjudicated candidates stop resurfacing on every shortlist run.
 
 Design: docs/superpowers/plans/2026-08-01-ruling-ledger-design.md. VEX-shaped
 dispositions (verdict + mandatory challengeable why) with SARIF-shaped
-invalidation (full-content sha256 of every file the judgment compared — any
-change re-opens the candidate).
+invalidation (sha256 of every file the judgment compared — any change re-opens
+the candidate).
+
+Subject hash, per record (`hash_algo`, absent = v1):
+  v1  full file content. Every standing ruling written before 2026-08-19.
+  v2  content minus the frontmatter keys `cites`, `last_checked`, `updated` —
+      the bookkeeping class that caused 3 of the 10 re-adjudications in the
+      2026-08-05→08-19 window. Body edits of any kind still invalidate.
+No migration wave: a v1 record keeps v1 sensitivity until it is naturally
+re-ruled, at which point it comes back as v2.
 
 One JSON object per line, append-only, in `<corpus>/.distill/rulings.jsonl`.
 Single-writer by design: O_APPEND of one newline-terminated line is the whole
@@ -15,6 +23,9 @@ premise is wrong.
 Verdicts:
   DROP   the flag is an artifact / coverage judged insufficient to retire.
   DEFER  genuine future candidate blocked on a named condition (why names it).
+         A DEFER also records the lesson's `evidence_count` at ruling time plus
+         `no_accrual_days` (default 30). When the count has not moved for that
+         long, shortlist ANNOUNCES the condition as met — it never retires.
 There is no ACCEPT: acceptance IS the retire.py transaction, and a retired
 file leaves the corpus, so it cannot resurface.
 
@@ -34,7 +45,7 @@ the human speaks — "prune never decides alone" applies to remembering too.
 Usage:
   ruling.py <id> --verdict DROP|DEFER --rank N --why "…" \
             [--covering <bare rule/skill stem> | --artifact] \
-            [--gate1 F] [--gate2 F]
+            [--gate1 F] [--gate2 F] [--no-accrual-days N]
   # rank-1 DROP requires exactly one of --covering / --artifact:
   #   --covering  a rule/skill carries this lesson (hashed as a 2nd subject)
   #   --artifact  the gate-1 flag is a false positive; nothing covers it
@@ -55,9 +66,79 @@ BASE = pathlib.Path.home() / ".claude"
 CORPUS_REL = "homunculus/instincts/personal"
 STRENGTH = {"RULE_DUP": 2, "SKILL_DUP": 2, "RULE_NEAR": 1, "SKILL_NEAR": 1}
 
+# Subject-hash v2 (2026-08-19 tuning, T1): the keys whose edits are pure
+# bookkeeping and must not re-open an otherwise untouched ruling. 3 of the 10
+# re-adjudications in the 2026-08-05→08-19 window were exactly this class.
+# `evidence_count` is deliberately NOT here — a changed count IS accrual, and
+# the DEFER exit condition reads it.
+BOOKKEEPING_KEYS = ("cites:", "last_checked:", "updated:")
+HASH_ALGOS = ("v1", "v2")
+DEFAULT_NO_ACCRUAL_DAYS = 30
+
 
 def _sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def strip_bookkeeping(text):
+    """Drop the bookkeeping keys from a leading `--- … ---` frontmatter block.
+
+    Line-based and pinned, NOT parse-and-reserialize: round-tripping YAML has
+    unstable key ordering and quoting, which would manufacture exactly the
+    false invalidations this function exists to kill. Body bytes are never
+    touched, and text with no leading frontmatter (rules/*.md, skills' SKILL.md)
+    passes through unchanged — stripping is a no-op there, by design."""
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return text
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"),
+               None)
+    if end is None:
+        return text  # unterminated frontmatter is not frontmatter
+    out, dropping = [lines[0]], False
+    for ln in lines[1:end]:
+        if ln[:1] in (" ", "\t"):
+            if not dropping:      # an indented continuation of a kept key
+                out.append(ln)
+            continue
+        dropping = ln.startswith(BOOKKEEPING_KEYS)
+        if not dropping:
+            out.append(ln)
+    return "\n".join(out + lines[end:])
+
+
+def subject_hash(path, algo="v1"):
+    """The one hash implementation. Both the writer (write_ruling) and the
+    verifier (subjects_valid) go through here — two copies would drift, and
+    drift here silently breaks suppression."""
+    if algo != "v2":
+        return _sha(path)
+    raw = path.read_bytes()
+    try:
+        text = raw.decode()
+    except UnicodeDecodeError:
+        return hashlib.sha256(raw).hexdigest()  # binary subject: full content
+    return hashlib.sha256(strip_bookkeeping(text).encode()).hexdigest()
+
+
+def read_evidence_count(path):
+    """Current frontmatter `evidence_count`, or None when the file is missing,
+    has no frontmatter, or the value will not parse. None means "stays manual"
+    everywhere it is read — never a guess, never a crash."""
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return None
+    for ln in lines[1:]:
+        if ln.strip() == "---":
+            break
+        m = re.fullmatch(r"evidence_count:\s*(\d+)\s*", ln)
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def rulings_path(base):
@@ -131,6 +212,23 @@ def _validate_ruling_row(r):
         raise ValueError("artifact ruling must contain only the instinct subject")
     if r.get("justification") == "covered" and len(subjects) < 2:
         raise ValueError("covered ruling requires a covering subject")
+    # 'hash_algo' and 'accrual' are both OPTIONAL — an absent 'hash_algo' means
+    # v1 (full content), an absent 'accrual' means a legacy DEFER that stays
+    # manual. Missing must not untrust the ledger; only present-but-wrong is
+    # rejected. An UNKNOWN algo is rejected: we cannot verify a hash we cannot
+    # compute, and guessing v1 would silently suppress on a false match.
+    if "hash_algo" in r and r["hash_algo"] not in HASH_ALGOS:
+        raise ValueError(f"unknown 'hash_algo' {r['hash_algo']!r} "
+                         f"(want one of {HASH_ALGOS})")
+    if "accrual" in r:
+        accrual = r["accrual"]
+        if not isinstance(accrual, dict):
+            raise ValueError("mistyped 'accrual' (want object)")
+        for key in ("evidence_count", "no_accrual_days"):
+            val = accrual.get(key)
+            if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                raise ValueError(f"missing/mistyped accrual.{key} "
+                                 f"(want non-negative int)")
 
 
 def load_rulings(base):
@@ -156,11 +254,54 @@ def load_rulings(base):
 
 
 def subjects_valid(ruling, base):
+    """Per-record hash dispatch: an absent `hash_algo` is a v1 record and keeps
+    its original full-content sensitivity. There is no migration wave — a
+    standing ruling comes back as v2 only when it is naturally re-ruled."""
+    algo = ruling.get("hash_algo", "v1")
     for s in ruling["subjects"]:
         p = base / s["path"]
-        if not p.is_file() or _sha(p) != s["sha256"]:
+        if not p.is_file() or subject_hash(p, algo) != s["sha256"]:
             return False
     return True
+
+
+def latest_defers(rulings):
+    """One DEFER per id — the last one written. The ledger stays append-only;
+    only the read side collapses (T3: 10 lines for 3 files, with stale
+    `[subjects changed]` markers on rulings a later record already replaced)."""
+    latest = {}
+    for r in rulings or []:
+        if r.get("verdict") == "DEFER":
+            latest[r["id"]] = r
+    return list(latest.values())
+
+
+def defer_condition_met(ruling, base, today=None):
+    """True iff this DEFER's inactivity condition has come due: the lesson's
+    `evidence_count` is unchanged since the ruling AND `no_accrual_days` have
+    passed. ANNOUNCE-ONLY — the caller prints, it never retires. "Prune never
+    decides alone" applies here too.
+
+    Every unknown answers False (stays manual): a legacy record with no
+    accrual block, an unreadable current count, a missing file, a nonsense
+    date. Never raises."""
+    if ruling.get("verdict") != "DEFER":
+        return False
+    accrual = ruling.get("accrual")
+    if not isinstance(accrual, dict):
+        return False
+    at_ruling = accrual.get("evidence_count")
+    days = accrual.get("no_accrual_days", DEFAULT_NO_ACCRUAL_DAYS)
+    if not isinstance(at_ruling, int) or not isinstance(days, int):
+        return False
+    current = read_evidence_count(base / CORPUS_REL / f"{ruling['id']}.md")
+    if current is None or current != at_ruling:
+        return False
+    try:
+        ruled = datetime.date.fromisoformat(ruling.get("ruled", ""))
+    except (TypeError, ValueError):
+        return False
+    return ((today or datetime.date.today()) - ruled).days >= days
 
 
 def suppresses(ruling, stem, rank, gate1, base):
@@ -198,7 +339,7 @@ def _gate1_of(reason):
 
 
 def write_ruling(base, id_, verdict, rank, why, covering, gate1, gate2,
-                 artifact=False):
+                 artifact=False, no_accrual_days=DEFAULT_NO_ACCRUAL_DAYS):
     if verdict not in ("DROP", "DEFER"):
         print(f"ruling: verdict must be DROP or DEFER, got {verdict!r}",
               file=sys.stderr)
@@ -235,20 +376,38 @@ def write_ruling(base, id_, verdict, rank, why, covering, gate1, gate2,
     if not inst.is_file():
         print(f"ruling: no live instinct {inst}", file=sys.stderr)
         raise SystemExit(2)
-    subjects = [{"path": str(inst.relative_to(base)), "sha256": _sha(inst)}]
+    # A DEFER's exit condition is inactivity, so the count it will be compared
+    # against must be readable NOW. Writing a DEFER we can never evaluate would
+    # produce a promise that silently stays manual forever — refuse instead.
+    accrual = None
+    if verdict == "DEFER":
+        at_ruling = read_evidence_count(inst)
+        if at_ruling is None:
+            print(f"ruling: DEFER needs a readable `evidence_count` in the "
+                  f"frontmatter of {inst} — the exit condition compares it "
+                  f"against the count at ruling time; fix the file first",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        accrual = {"evidence_count": at_ruling,
+                   "no_accrual_days": int(no_accrual_days)}
+    subjects = [{"path": str(inst.relative_to(base)),
+                 "sha256": subject_hash(inst, "v2")}]
     justification = None
     if covering:
         cov = resolve_covering(base, covering)
         subjects.append({"path": str(cov.relative_to(base)),
-                         "sha256": _sha(cov)})
+                         "sha256": subject_hash(cov, "v2")})
         justification = "covered"
     elif artifact:
         justification = "artifact"
     rec = {"id": id_, "verdict": verdict, "rank": rank,
            "flags": {"gate1": gate1, "gate2": gate2}, "why": why.strip(),
-           "ruled": datetime.date.today().isoformat(), "subjects": subjects}
+           "ruled": datetime.date.today().isoformat(), "subjects": subjects,
+           "hash_algo": "v2"}
     if justification:
         rec["justification"] = justification
+    if accrual:
+        rec["accrual"] = accrual
     p = rulings_path(base)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
@@ -284,7 +443,8 @@ def main(argv):
         return check(BASE, args[1])
     id_ = None
     opt = {"verdict": None, "rank": None, "why": "", "covering": None,
-           "gate1": "-", "gate2": "-"}
+           "gate1": "-", "gate2": "-",
+           "no-accrual-days": str(DEFAULT_NO_ACCRUAL_DAYS)}
     artifact = False
     while args:
         a = args.pop(0)
@@ -305,11 +465,23 @@ def main(argv):
     if not (id_ and opt["verdict"] and opt["rank"]):
         print(__doc__)
         return 2
+    try:
+        days = int(opt["no-accrual-days"])
+        if days < 0:
+            raise ValueError
+    except ValueError:
+        print(f"ruling: --no-accrual-days must be a non-negative integer, got "
+              f"{opt['no-accrual-days']!r}", file=sys.stderr)
+        return 2
     rec = write_ruling(BASE, id_, opt["verdict"], int(opt["rank"]),
                        opt["why"], opt["covering"], opt["gate1"], opt["gate2"],
-                       artifact=artifact)
+                       artifact=artifact, no_accrual_days=days)
     print(f"recorded: {rec['verdict']} {id_} ({len(rec['subjects'])} subjects "
-          f"hashed) -> {rulings_path(BASE)}")
+          f"hashed, {rec['hash_algo']}) -> {rulings_path(BASE)}")
+    if "accrual" in rec:
+        print(f"  accrual: evidence_count={rec['accrual']['evidence_count']} "
+              f"at ruling time; announce when unchanged for "
+              f"{rec['accrual']['no_accrual_days']} days")
     return 0
 
 
@@ -328,8 +500,14 @@ def selftest():
         corpus = base / CORPUS_REL
         corpus.mkdir(parents=True)
         (base / "rules").mkdir()
+        # Frontmatter with a real evidence_count: a DEFER cannot be written
+        # without one (its exit condition compares against it), and the
+        # bookkeeping-strip probes below need keys to strip.
+        LESSON = ("---\nid: some-lesson\nevidence_count: 4\n"
+                  "cites: []\nupdated: \"2026-08-01\"\n"
+                  "last_checked: \"2026-08-01\"\n---\n# lesson\n")
         inst = corpus / "some-lesson.md"
-        inst.write_text("# lesson\n")
+        inst.write_text(LESSON)
         cov = base / "rules" / "cov.md"
         cov.write_text("# rule carrying it\n")
 
@@ -381,7 +559,7 @@ def selftest():
         with tempfile.TemporaryDirectory() as tmp2:
             base2 = pathlib.Path(tmp2)
             (base2 / CORPUS_REL).mkdir(parents=True)
-            (base2 / CORPUS_REL / "some-lesson.md").write_text("# lesson\n")
+            (base2 / CORPUS_REL / "some-lesson.md").write_text(LESSON)
             try:
                 write_ruling(base2, "some-lesson", "DROP", 2,
                              "weaker flag, no covering artifact yet", None,
@@ -440,10 +618,10 @@ def selftest():
         cov.write_text("# rule carrying it\n")
         chk("restoring the byte-identical subject suppresses again",
             apply_rulings(picked, rulings, base)[1])
-        inst.write_text("# lesson\nnew evidence\n")
+        inst.write_text(LESSON + "new evidence\n")
         chk("instinct change (new evidence) re-opens the candidate",
             not apply_rulings(picked, rulings, base)[1])
-        inst.write_text("# lesson\n")
+        inst.write_text(LESSON)
         cov.unlink()
         chk("deleted covering subject re-opens the candidate",
             not apply_rulings(picked, rulings, base)[1])
@@ -539,6 +717,140 @@ def selftest():
         chk("--check exits 0 on a valid standing ruling",
             check(base, "some-lesson") == 0)
         chk("--check exits 1 for an unruled id", check(base, "nope") == 1)
+
+    # ---- T1: subject-hash v2 (bookkeeping-insensitive) --------------------
+    # 3 of the 10 re-adjudications in the 2026-08-05→08-19 window were caused
+    # by a cites/last_checked/updated-only edit invalidating an otherwise
+    # untouched ruling. v2 hashes the file MINUS those frontmatter keys.
+    def _lesson(evid=3, cites='cites: []', body="# lesson\nsome content\n",
+                checked="2026-08-01", updated="2026-08-01"):
+        return ("---\n"
+                "id: v2-lesson\n"
+                "trigger: \"a literal string | another one\"\n"
+                f"evidence_count: {evid}\n"
+                f"{cites}\n"
+                f"updated: \"{updated}\"\n"
+                f"last_checked: \"{checked}\"\n"
+                "---\n" + body)
+
+    with tempfile.TemporaryDirectory() as tmp5:
+        base5 = pathlib.Path(tmp5)
+        corpus5 = base5 / CORPUS_REL
+        corpus5.mkdir(parents=True)
+        (base5 / "rules").mkdir()
+        lesson5 = corpus5 / "v2-lesson.md"
+        lesson5.write_text(_lesson())
+        rule5 = base5 / "rules" / "cov5.md"
+        rule5.write_text("# a covering rule, no frontmatter\n")
+
+        rec5 = write_ruling(base5, "v2-lesson", "DROP", 1,
+                            "covered by rules/cov5.md", "cov5", "RULE_DUP", "-")
+        chk("new ruling is stamped hash_algo v2 (RED)",
+            rec5.get("hash_algo") == "v2")
+        picked5 = [(1, "v2-lesson.md", "RULE_DUP+CONVERTED — rule carries it")]
+
+        def suppressed5():
+            return bool(apply_rulings(picked5, load_rulings(base5), base5)[1])
+
+        chk("v2: byte-identical subject still suppresses", suppressed5())
+        lesson5.write_text(_lesson(cites='cites:\n  - "rules/cov5.md"'))
+        chk("v2 survives a cites-only edit (RED — the 3-of-10 case)",
+            suppressed5())
+        lesson5.write_text(_lesson(checked="2026-08-19"))
+        chk("v2 survives a last_checked-only edit (RED)", suppressed5())
+        lesson5.write_text(_lesson(updated="2026-08-19"))
+        chk("v2 survives an updated-only edit (RED)", suppressed5())
+        lesson5.write_text(_lesson(evid=4))
+        chk("v2 re-opens on an evidence_count edit (accrual is NOT bookkeeping)",
+            not suppressed5())
+        lesson5.write_text(_lesson(body="# lesson\nrewritten content\n"))
+        chk("v2 re-opens on a body edit", not suppressed5())
+        lesson5.write_text(_lesson())
+        chk("v2 suppresses again once the body is restored", suppressed5())
+        rule5.write_text("# a covering rule, no frontmatter\nedited\n")
+        chk("v2 re-opens when a frontmatter-less covering file changes "
+            "(stripping is a no-op there)", not suppressed5())
+        rule5.write_text("# a covering rule, no frontmatter\n")
+
+        # v1 records (no hash_algo) keep their old full-content sensitivity —
+        # no migration wave; standing rulings are unchanged until re-ruled.
+        legacy5 = dict(rec5)
+        legacy5.pop("hash_algo", None)
+        legacy5["subjects"] = [dict(s, sha256=_sha(base5 / s["path"]))
+                               for s in legacy5["subjects"]]
+        rulings_path(base5).write_text(json.dumps(legacy5) + "\n")
+        chk("v1 record (no hash_algo) suppresses a byte-identical file",
+            suppressed5())
+        lesson5.write_text(_lesson(checked="2026-08-19"))
+        chk("v1 record still re-opens on a last_checked-only edit "
+            "(no migration wave — old sensitivity preserved)",
+            not suppressed5())
+        lesson5.write_text(_lesson())
+
+    # ---- T2: DEFER accrual bookkeeping ------------------------------------
+    with tempfile.TemporaryDirectory() as tmp6:
+        base6 = pathlib.Path(tmp6)
+        corpus6 = base6 / CORPUS_REL
+        corpus6.mkdir(parents=True)
+        bare6 = corpus6 / "bare-lesson.md"
+        bare6.write_text("# no frontmatter at all\n")
+        try:
+            write_ruling(base6, "bare-lesson", "DEFER", 1,
+                         "blocked on a named condition", None, "-", "-")
+            code = 0
+        except SystemExit as e:
+            code = e.code
+        chk("DEFER without a readable evidence_count is refused (exit 2, RED)",
+            code == 2)
+
+        live6 = corpus6 / "v2-lesson.md"
+        live6.write_text(_lesson(evid=7))
+        rec6 = write_ruling(base6, "v2-lesson", "DEFER", 1,
+                            "blocked on accrual — revisit when it stops "
+                            "accruing evidence", None, "-", "-")
+        chk("DEFER records the evidence_count at ruling time (RED)",
+            rec6.get("accrual", {}).get("evidence_count") == 7)
+        chk("DEFER records no_accrual_days, default 30 (RED)",
+            rec6.get("accrual", {}).get("no_accrual_days") == 30)
+        chk("a DROP carries no accrual block",
+            "accrual" not in write_ruling(
+                base6, "v2-lesson", "DROP", 2, "unrelated drop", None, "-", "-"))
+
+        old = datetime.date.today() - datetime.timedelta(days=31)
+        young = datetime.date.today() - datetime.timedelta(days=29)
+        met = dict(rec6, ruled=old.isoformat())
+        chk("condition MET: count unchanged and ≥ 30 days elapsed",
+            defer_condition_met(met, base6))
+        chk("not met: 29 days elapsed",
+            not defer_condition_met(dict(rec6, ruled=young.isoformat()), base6))
+        live6.write_text(_lesson(evid=8))
+        chk("not met: the lesson accrued (count moved) — the clock resets",
+            not defer_condition_met(met, base6))
+        live6.write_text(_lesson(evid=7))
+        legacy6 = dict(met)
+        legacy6.pop("accrual", None)
+        chk("legacy DEFER without accrual stays manual (announces nothing)",
+            not defer_condition_met(legacy6, base6))
+        live6.write_text("# frontmatter dropped by hand\n")
+        chk("unreadable current evidence_count stays manual, never crashes",
+            not defer_condition_met(met, base6))
+        live6.unlink()
+        chk("a missing lesson file stays manual, never crashes",
+            not defer_condition_met(met, base6))
+        chk("a DROP is never a DEFER condition",
+            not defer_condition_met(dict(met, verdict="DROP"), base6))
+        chk("a nonsense ruled date stays manual",
+            not defer_condition_met(dict(met, ruled="not-a-date"), base6))
+
+        # latest-per-id (T3): the ledger stays append-only; only the read side
+        # collapses. Order is ledger order — the last record written wins.
+        seq = [dict(rec6, ruled="2026-08-01", why="first"),
+               dict(rec6, ruled="2026-08-02", why="second"),
+               dict(rec6, id="other-lesson", ruled="2026-08-01", why="other")]
+        latest = latest_defers(seq)
+        chk("latest_defers keeps one record per id", len(latest) == 2)
+        chk("latest_defers keeps the LAST record for a re-ruled id",
+            next(r for r in latest if r["id"] == "v2-lesson")["why"] == "second")
 
     print("SELFTEST:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
