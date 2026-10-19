@@ -95,6 +95,15 @@ whole partition; 12 buys 80% at a quarter of the reading cost.
 `min_score` defaults to **0.0** deliberately. Inside a partition the *judge* is the filter; a
 lexical threshold is precisely what suppressed 98% of true pairs in the falsified design.
 
+Then list the lessons the recall hook keeps firing, by distinct sessions:
+
+```bash
+awk -F'\t' '{print $5"\t"$2}' ~/.claude/instinct-recall.log | sort -u | cut -f1 | sort | uniq -c | sort -rn | head -15
+```
+
+Each fire is an untyped recurrence; [`GATES.md`](reference/GATES.md) § "A recall-hook fire"
+says how to type it. Judge the top ids even when the shortlist did not surface them.
+
 ### 3. Judge one partition at a time
 
 The model reads the shortlisted candidates **for a single domain** and proposes clusters. Twelve
@@ -135,7 +144,9 @@ part of the protocol no script can enforce.
 
 Before opening one transaction, show the human one review surface containing: source ids and
 hashes, destination artifact and prior hash, full proposed artifact text, every planned discovery
-link and whether it already exists, citation rewrites, archive and MANIFEST destinations,
+link and whether it already exists, citation rewrites, archive and MANIFEST destinations, each
+source's recall reachability and whether it stays live (`ROUTING.md` § "Keep a hook-reachable
+source live"),
 expected postconditions, rollback snapshot/path, and the transaction identifier. Approval applies
 to that transaction only; any changed source, artifact, link, or destination invalidates it and
 requires a fresh review.

@@ -20,6 +20,24 @@
       "install": true
     },
     {
+      "source": "hooks/instinct-recall.py",
+      "destination": "hooks/instinct-recall.py",
+      "type": "file",
+      "mode": "preserve",
+      "ownership": "managed",
+      "replace": "replace",
+      "install": true
+    },
+    {
+      "source": "hooks/shellscan.py",
+      "destination": "hooks/shellscan.py",
+      "type": "file",
+      "mode": "preserve",
+      "ownership": "managed",
+      "replace": "replace",
+      "install": true
+    },
+    {
       "source": "rules/instincts.md",
       "destination": "rules/instincts.md",
       "type": "file",

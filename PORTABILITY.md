@@ -32,7 +32,7 @@ when the default path is absent:
 | Tool | Needed by | If missing |
 |---|---|---|
 | `bash` 3.2+ | everything | nothing runs |
-| `python3` | prune's shortlist/retire/ruling, all of distill and format's scripts | command-not-found; buckets and the hook still work (pure bash) |
+| `python3` | prune's shortlist/retire/ruling, all of distill and format's scripts, the recall hook | command-not-found; buckets and the session-start hook still work (pure bash) |
 | `git` | `export-package.sh` only | dies: "not a git repo — the export ships tracked files only" |
 | `gitleaks` | `pre-publish.sh` layer 2 | exit 2, fail-closed; `SKIP_GITLEAKS=1` downgrades deliberately and should be noted in release notes |
 | `grep`, `awk`, `sed`, `find` | throughout | developed against macOS/BSD + GNU userlands; uses a few widely-supported extensions (`grep --binary-files`, `find -maxdepth`, `find -delete`) that a strictly minimal POSIX userland lacks — that userland is not a target |
@@ -76,6 +76,20 @@ supported**: root lists inside `instinct-buckets.sh` and the surface check in
 `pre-publish.sh` word-split on whitespace. Defined behavior is misparsed root lists, so:
 don't. This is a known, documented limitation rather than a bug queue item — fixing it
 means rewriting every root loop for a case no development machine has.
+
+## Recall hook: Claude Code only
+
+`instinct-recall.py` reads Claude Code's `PostToolUse` / `PostToolUseFailure` payload and
+answers with `hookSpecificOutput.additionalContext`; other hosts are not supported. It reads the
+corpus from `REFINERY_INSTINCT_DIR` (default as above), keeps per-session state in
+`INSTINCT_RECALL_STATE` (default `/tmp/claude-instinct-recall`), and appends fires to
+`INSTINCT_RECALL_LOG` (default `~/.claude/instinct-recall.log`). It always exits 0 and never
+blocks a tool call. Without `shellscan.py` beside it, it cannot tell a read-only command from
+one that failed, and fires more often on quoted symptoms.
+
+`trigger_probe.py` imports the hook: it looks in `~/.claude/hooks/` first, then in the checkout
+the skill links resolve to, and exits with both paths named when neither has it. Its replay mode
+reads Claude Code transcripts under `~/.claude/projects`; `--no-replay` needs neither.
 
 ## mktemp and sandboxed TMPDIR
 

@@ -104,7 +104,7 @@ promoted() {
   hits=$(while read -r w; do
            [ -z "$w" ] && continue
            grep -li -- "$w" "$RULES"/*.md "$SKILLS"/*/SKILL.md 2>/dev/null
-         done <<< "$words" | grep -v '/skills/instinct-' | sort | uniq -c | sort -rn)
+         done < <(printf '%s\n' "$words") | grep -v '/skills/instinct-' | sort | uniq -c | sort -rn)
   [ -z "$hits" ] && { echo "-"; return; }
   top=$(echo "$hits" | head -1 | awk '{print $1}')
   bestline=$(echo "$hits" | awk -v c="$top" '$1 == c && $2 ~ /\/rules\//{print; exit}')
@@ -261,7 +261,7 @@ repo_true_declared() {
       if [ -e "$r/$p" ]; then found=1; break; fi
     done
     if [ "$found" -eq 0 ]; then dead=$((dead+1)); fi
-  done <<< "$paths"
+  done < <(printf '%s\n' "$paths")
   if [ "$dead" -eq 0 ]; then echo "CITES_OK"; return; fi
   # Rule 4 (never declare a path that cannot resolve here) should make this
   # unreachable, but the guard stays: fail toward not-deleting.
@@ -291,7 +291,7 @@ repo_true_inferred() {
     done
     [ -e "$p" ] && found=1
     if [ "$found" -eq 0 ]; then dead=$((dead+1)); fi
-  done <<< "$paths"
+  done < <(printf '%s\n' "$paths")
   # Resolution wins over the name heuristic: a file may name an absent project
   # yet cite paths that resolve elsewhere (projects get renamed — legacy-checkout
   # became Client_Portal). Only fall back to UNVERIFIABLE when paths actually
@@ -569,6 +569,28 @@ cites: this-is-not-a-list
 body"
   expect cites-scalar-still-invalid CITES_INVALID
 
+  # ---- unwritable working directory -----------------------------------
+  # The report cd's into the corpus. bash 3.2 creates a temp file for every
+  # `<<<` here-string, and inside $(…) that fails when the cwd is unwritable
+  # (a sandboxed run, a read-only corpus). The loop then read NOTHING, exit 0:
+  # gate 1 scored all 421 files `-`, and gate 2 scored two ALL_DEAD lessons
+  # CITES_OK (2026-10-18). Both gates must score the same from a cwd they
+  # cannot write to.
+  mkdir -p "$ST/ro" "$ST/cov-rules" "$ST/cov-skills"
+  printf '%s\n' "quokkas walruses narwhals pangolins" > "$ST/cov-rules/cov.md"
+  printf '%s\n' "# Quokkas walruses narwhals pangolins" > "$ST/gate1-ro.md"
+  chmod 555 "$ST/ro"
+  got=$(cd "$ST/ro" && RULES="$ST/cov-rules" SKILLS="$ST/cov-skills" && promoted "$ST/gate1-ro.md" 2>/dev/null)
+  if [ "$got" = "RULE_DUP" ]; then echo "  PASS  gate1-unwritable-cwd -> RULE_DUP"
+  else echo "  FAIL  gate1-unwritable-cwd -> got $got, want RULE_DUP"; ST_FAIL=$((ST_FAIL+1)); fi
+  got=$(cd "$ST/ro" && repo_true "$ST/inferred-dead.md" 2>/dev/null)
+  if [ "$got" = "ALL_DEAD" ]; then echo "  PASS  gate2-inferred-unwritable-cwd -> ALL_DEAD"
+  else echo "  FAIL  gate2-inferred-unwritable-cwd -> got $got, want ALL_DEAD"; ST_FAIL=$((ST_FAIL+1)); fi
+  got=$(cd "$ST/ro" && repo_true "$ST/cites-dead.md" 2>/dev/null)
+  if [ "$got" = "ALL_DEAD" ]; then echo "  PASS  gate2-declared-unwritable-cwd -> ALL_DEAD"
+  else echo "  FAIL  gate2-declared-unwritable-cwd -> got $got, want ALL_DEAD"; ST_FAIL=$((ST_FAIL+1)); fi
+  chmod 755 "$ST/ro"
+
   # ---- starvation counts (R1a) ----------------------------------------
   # A synthetic tally in the frozen 7-column shape, through the REAL reporting
   # function. Re-deriving the counts in the test would assert nothing about
@@ -605,8 +627,8 @@ body"
   refute_str "starvation: a verdict-bearing label is never called invisible" \
     "CITES_OK"
 
-  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (24 checks)"; exit 0
-  else echo "selftest: FAIL ($ST_FAIL of 24)"; exit 1; fi
+  if [ "$ST_FAIL" -eq 0 ]; then echo "selftest: PASS (27 checks)"; exit 0
+  else echo "selftest: FAIL ($ST_FAIL of 27)"; exit 1; fi
 fi
 
 # ---------------------------------------------------------------- report

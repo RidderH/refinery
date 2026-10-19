@@ -71,11 +71,10 @@ model would recognise it should load a skill, it has already formed the wrong op
 conflicting instruction is already in its context and a lazily-loaded file cannot rebut text
 that arrived first.
 
-The two clearest existing pairs earned it for *specific*, non-generalising reasons:
+The clearest existing pair earned it for a *specific*, non-generalising reason (a second pair,
+`rules/search-tools.md`, existed only to rebut a plugin's SessionStart directive and was retired
+with that plugin on 2026-10-05):
 
-- `rules/search-tools.md` duplicates its skill because a plugin injects a conflicting always-on
-  directive at SessionStart (`skills/search-and-research-routing/SKILL.md:37`). A skill loaded
-  later cannot argue with a directive already in context.
 - `rules/workflow.md`'s scope-discipline block duplicates
   `skills/plan-workflow-conventions/SKILL.md:22` because it must fire on **user pushback** —
   the one moment nobody thinks to load a skill.
@@ -177,14 +176,29 @@ without checking, and the source is gone by the time anyone notices it did not.
 instinct holds the evidence. Archiving it strands the rule's justification — `grep` `rules/*.md`
 for the id before touching it.
 
+**Keep a hook-reachable source live.** The recall hook indexes `instincts/personal/` only, so
+archiving a source ends its recall at the moment of the symptom; a skill or rule is not read at
+that moment. Before archiving, check each source:
+
+```bash
+python3 "$SKILL_DIR/../instinct-format/scripts/trigger_probe.py" <id>.md --no-replay
+```
+
+Exit `0` (reachable): keep the file live, set `promoted_to` to the target, and archive only its
+siblings. The exception is a rung 5 hook that catches the same symptom earlier; then archive it,
+and say so in the review surface. Exit `2`: archive as usual.
+
+The `promoted_to` write edits a source the ledger does not snapshot; take its bytes as for an
+artifact edit (SKILL.md caller contract § 4) so a rollback can restore them.
+
 **Archive, never delete**, into `homunculus/instincts/Archive/<YYYY-MM-DD>/`. Note the trap: the
 doc-blocker hook is `Write`-scoped and its allowlist covers
 `homunculus/instincts/personal/` — *not* the archive dir. Create the MANIFEST via Bash, or the
 write is refused (`hooks/doc-blocker.js`; read the live `ALLOWED` list rather than trusting this
 sentence).
 
-**Never bulk-compact the survivors.** Instincts are grep-surfaced and cost nothing until
-retrieved, so the lever is archiving overlap — not shortening bodies that no session loads.
+**Never bulk-compact the survivors.** Instincts cost nothing until the recall hook or a grep
+surfaces them, so the lever is archiving overlap — not shortening bodies that no session loads.
 
 ---
 

@@ -53,7 +53,7 @@ Apply gate C fairly to harness lessons: a hook's rejection message usually says 
 
 ### Gate D — existing-coverage sweep
 
-Run this **only on candidates that already passed A, B and C** — it is the one place Phase 2 touches tools, and gating it behind the free checks keeps triage cheap.
+Run this **only on candidates that already passed A, B and C** — gates D and E are the only places Phase 2 touches tools, and gating them behind the free checks keeps triage cheap.
 
 One batched grep over everything that could already own the lesson, not the corpus alone:
 
@@ -87,6 +87,27 @@ Then judge, per hit:
 **Open every file that matched.** A match count is a reason to read, never a substitute for reading — grep hits on a shared keyword, not a shared meaning, and dropping a genuinely new candidate because a word collided is the one way this gate makes things worse.
 
 Watch for the commonest hit of all: **a skill or rule edited earlier in this same session.** A lesson banked at the right altitude an hour ago is not a second lesson now.
+
+### Gate E — replay
+
+Run this on every candidate still standing after gate D. Draft its `trigger:` now (see
+[Writing bar](#writing-bar)) and **replay** it through the recall hook's own matching logic:
+
+```bash
+python3 ~/.claude/skills/instinct-format/scripts/trigger_probe.py "<draft trigger>"
+```
+
+It finds this session's transcript itself (`--session FILE` overrides) and also replays the 40
+most recent sessions (`--recent N`). Act on the exit code:
+
+| Exit | Result | Action |
+|---|---|---|
+| `2` | UNREACHABLE — no phrase the hook can index | If this session printed an error for the lesson, quote that line in the trigger and replay again. If no error text exists, the hook can never surface it: route to the owning skill's Gotchas section in check (d). |
+| `1` | SILENT in this session | The trigger paraphrases a symptom instead of quoting it. Copy the literal output line from the session and replay. SILENT stands only for a lesson with no tool output at the moment of need (a user correction); note that in the Gates line. |
+| `0` | FIRES in this session | Read every `RECENT` hit. A hit on the same trouble is a true recall; a hit on unrelated output is noise — lengthen the phrase toward the full error line and replay. |
+
+For an error-shaped lesson, `FIRES` is gate A made observable: the instinct would have appeared
+at the exact moment this session needed it.
 
 State the gate result explicitly per candidate. A candidate failing any gate is dropped here and appears in the final output only under "Considered and dropped".
 
@@ -192,7 +213,7 @@ A candidate harvested from the session narrative carries a *causal* claim ("X fa
 - **A hook or settings change** — the behavior should be enforced mechanically, not remembered
 
 **Fixing the config does not consume the lesson.** If this session changed a hook, an allowlist, or a setting, ask separately: *did I also learn something durable about how the harness behaves?* The fix stops that one blockage; the instinct is what stops the next session losing an hour to the same class of surprise. Both can be true, and routing a lesson to "I already fixed it" is the most common way a `HARNESS` candidate gets wrongly dropped.
-- **An instinct** — situational, fires on a recognizable trigger, useless the other 95% of the time
+- **An instinct** — situational, fires on a recognizable trigger, useless the other 95% of the time. Requires a gate E replay of `FIRES`, or `SILENT` with the user-correction reason. An `UNREACHABLE` lesson goes to the owning skill's Gotchas section; an instinct only if the user picks it knowing that only a manual grep will find it.
 
 Return `INSTINCT` or the better home with a specific target path.
 
@@ -206,6 +227,7 @@ N. [id] — VERDICT: SAVE | BUMP <id> to 0.X | MERGE into <id> [and BUMP to 0.X]
    action:  <what to do>
    In plain terms: <one sentence, no jargon — what this means and why it matters>
    Evidence:  reality <file:line or exact command + relevant output> | docs <ctx7 citation + version, or N/A>
+   Replay:    session FIRES | SILENT (<reason>) | UNREACHABLE · recent <n>/<N>, <true recalls or noise>
    Gates:     counterfactual <the action it would have changed> · recurrence <the context> · non-derivable <why>
 ```
 
@@ -217,9 +239,11 @@ Finally, state your own recommendation on which to actually save. The user shoul
 
 ## Writing bar
 
-Retrieval is a manual `grep -l -i` across the corpus, run by the model once the topic is known and searched by *symptom* — the literal error text, exit code, or phrase just seen. Nothing ranks or pre-selects for you (`~/.claude/hooks/surface-instincts.sh` names no files). Design for that:
+Most instincts are read because the recall hook injects them when tool output matches a trigger
+phrase; a manual grep by symptom is rare (11 of 107 transcripts, 2026-10-18). Design for the
+hook, and let gate E prove it:
 
-- The `trigger:` line **must contain the literal strings that will appear in future work** — error text, filenames, API names, table names. An abstractly-phrased trigger is unretrievable and therefore dead on arrival.
+- The `trigger:` line **quotes the literal error line the session printed**, prefix included, as its first phrase. The reachability rules live in `instinct-format` under "`trigger` — quote the error line first".
 - Length is not quality. A 250-line instinct outranks nothing; it just matches more keywords by accident and crowds out precise ones. Keep it as short as the lesson allows. Start at a few lines and one gotcha; let it grow only when a later session hits a new edge case.
 - One instinct = one lesson. If you are writing "also, related to this..." — that is a second instinct, or it is padding.
 - Do not state the obvious. Claude can already read the codebase and the error message. An instinct earns its place by pushing against the default behavior — if it describes what would have happened anyway, it is noise.
@@ -278,6 +302,7 @@ Write instinct files to `~/.claude/homunculus/instincts/personal/`.
 - Every harvested candidate has an explicit gate outcome and every survivor has a refutation attempt.
 - Every SAVE/BUMP/MERGE recommendation cites current reality; library claims also cite current docs.
 - The recommendation states the target artifact and literal retrieval trigger.
+- Every recommended instinct carries its gate E replay result.
 - Dropped candidates are named with their failing gate.
 - Nothing is written until the user selects a recommendation; after selection, the result passes
   the `instinct-format` contract and records the new evidence.
@@ -287,3 +312,6 @@ Write instinct files to `~/.claude/homunculus/instincts/personal/`.
   not done: it survives only in the working tree, where the next session's sweep counts it as
   saved while a stray checkout drops it. Local repo only — this repo has no remote, and
   `git push` has nothing to push to.
+- Before committing, run `git -C ~/.claude branch --show-current` and name the branch to the user.
+  The default is `master`; a capture on a feature branch exists on disk now but reverts if
+  `~/.claude` is switched before that branch merges.
