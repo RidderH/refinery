@@ -28,6 +28,7 @@ class Word:
     redirect: bool = False  # target of a < or > redirection, not an argument
     redirect_out: bool = False  # ...and that redirection writes: > >> >| <> &>
     first_quoted: bool = False  # its first character came from a quote or escape (so `NAME=` is not an assignment)
+    start: int = -1  # index in the scanned string of its first character (relative inside a backtick or `${…}` body)
 
 
 @dataclass
@@ -68,7 +69,7 @@ def scan(s, i=0, nested=0, until_paren=False):
     def word(quoting=False):
         nonlocal w
         if w is None:
-            w = Word(first_quoted=quoting)
+            w = Word(first_quoted=quoting, start=i)
         return w
 
     def substitution(at):
