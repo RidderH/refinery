@@ -240,7 +240,7 @@ Finally, state your own recommendation on which to actually save. The user shoul
 ## Writing bar
 
 Most instincts are read because the recall hook injects them when tool output matches a trigger
-phrase; a manual grep by symptom is rare (11 of 107 transcripts, 2026-10-18). Design for the
+phrase; a manual grep by symptom is rare. Design for the
 hook, and let gate E prove it:
 
 - The `trigger:` line **quotes the literal error line the session printed**, prefix included, as its first phrase. The reachability rules live in `instinct-format` under "`trigger` — quote the error line first".

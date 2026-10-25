@@ -71,9 +71,7 @@ model would recognise it should load a skill, it has already formed the wrong op
 conflicting instruction is already in its context and a lazily-loaded file cannot rebut text
 that arrived first.
 
-The clearest existing pair earned it for a *specific*, non-generalising reason (a second pair,
-`rules/search-tools.md`, existed only to rebut a plugin's SessionStart directive and was retired
-with that plugin on 2026-10-05):
+The clearest existing pair earned it for a *specific*, non-generalising reason:
 
 - `rules/workflow.md`'s scope-discipline block duplicates
   `skills/plan-workflow-conventions/SKILL.md:22` because it must fire on **user pushback** —

@@ -86,9 +86,9 @@ criterion.
 
 The hook indexes a phrase only when it is at least 16 characters **and contains an error word**
 (`error`, `fatal`, `failed`, `denied`, `not found`, `no such`, `cannot`, `exit code`, …; the full
-list is `ERROR_WORD` in the hook). A trigger with no such phrase is never recalled. Measured
-2026-10-18: 275 of 421 files, almost all with triggers that describe a situation ("when
-reviewing a multi-phase implementation") instead of quoting what the tool printed.
+list is `ERROR_WORD` in the hook). A trigger with no such phrase is never recalled. The usual
+miss is a trigger that describes a situation ("when reviewing a multi-phase implementation")
+instead of quoting what the tool printed.
 
 - Quote the line **with its prefix**. `did not match any file(s) known to git` contains no
   error word and is unreachable; `error: pathspec 'x' did not match` is reachable.

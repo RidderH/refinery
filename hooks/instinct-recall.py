@@ -22,8 +22,8 @@ MAX_TEXT = 20_000
 LIMIT = 2
 # A trigger phrase is only a symptom if it reads like an error message. The lookbehind
 # rejects code tokens that merely contain the word (console.error, e2e_preexisting_failures).
-# Calibrated by replaying 400 transcripts (2026-10-05): without it the hook fired on 9% of
-# all tool results, mostly on topic words and identifiers in ordinary file reads.
+# Without this filter the hook fires on a sizeable share of all tool results, mostly on topic
+# words and identifiers in ordinary file reads.
 ERROR_WORD = re.compile(
     r"(?<![.\w])(error|errors|not found|no such|cannot|can't|could not|couldn't|failed|failure"
     r"|denied|refused|not allowed|invalid|unexpected|exit code|exited|no matches|warning"
@@ -33,8 +33,8 @@ ERROR_WORD = re.compile(
 WATCHED_TOOLS = {"Bash"}
 # Programs that only print what is already on disk. A command made of nothing else shows file
 # content — a transcript, a log, a digest, a patch — where a lesson's symptom is quoted, not
-# happening. Joined back to their commands, ~14 of ~45 fires over 2026-09-21..10-05 were such
-# reads. Interpreters are deliberately absent: what they print is the program's own output.
+# happening; unfiltered, such reads are a large share of all fires. Interpreters are
+# deliberately absent: what they print is the program's own output.
 READERS = {"cat", "head", "tail", "sed", "grep", "egrep", "fgrep", "rg", "ugrep", "less", "more", "wc", "cut",
            "awk", "jq", "nl", "sort", "uniq", "tr", "column", "strings", "bat", "ls", "echo", "printf", "cd",
            "true", "find", "diff", "cmp", "file", "stat", "basename", "dirname", "realpath", "xxd", "od",

@@ -87,11 +87,9 @@ first missing required field, so while `schema_version` is absent it never reach
 moment the evidence migration stamps `schema_version: 2`, three body sections it never mentioned
 start failing — `symptom`, `what's actually happening`, `do this`.
 
-That is a reveal, not a regression: the debt was always there. But it is the majority state, so
-expect it. Measured 2026-09-05 over 401 files: **268 still carry the old `## Action` body against
-133 converted**, and of those 268 exactly **9 are stamped — all 9 fail this check**, while 58 of
-the 134 `## Symptom` files are stamped and all pass. Shape predicts the verdict almost perfectly;
-the 9 are simply the ones whose evidence was migrated first.
+That is a reveal, not a regression: the debt was always there. In a corpus that predates this
+contract it is the majority state, so expect it. Body shape predicts the verdict: a stamped file
+still carrying the old `## Action` body fails this check, and a stamped `## Symptom` file passes.
 
 So when you migrate a file's evidence, convert its body in the same pass — or knowingly leave a
 red `--check` behind and say so.

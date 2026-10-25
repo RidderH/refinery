@@ -573,9 +573,8 @@ body"
   # The report cd's into the corpus. bash 3.2 creates a temp file for every
   # `<<<` here-string, and inside $(…) that fails when the cwd is unwritable
   # (a sandboxed run, a read-only corpus). The loop then read NOTHING, exit 0:
-  # gate 1 scored all 421 files `-`, and gate 2 scored two ALL_DEAD lessons
-  # CITES_OK (2026-10-18). Both gates must score the same from a cwd they
-  # cannot write to.
+  # gate 1 scored every file `-`, and gate 2 scored ALL_DEAD lessons
+  # CITES_OK. Both gates must score the same from a cwd they cannot write to.
   mkdir -p "$ST/ro" "$ST/cov-rules" "$ST/cov-skills"
   printf '%s\n' "quokkas walruses narwhals pangolins" > "$ST/cov-rules/cov.md"
   printf '%s\n' "# Quokkas walruses narwhals pangolins" > "$ST/gate1-ro.md"
