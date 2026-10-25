@@ -22,12 +22,13 @@ Working on an existing file? Route by size first:
 
 ## Why this shape
 
-The corpus is **pull-only**: nothing is injected at session start. A file earns its place by
-being found by **symptom** search and cheap to read once found. Three cost tiers follow, and
-the format serves them:
+A file earns its place by being found by **symptom** and cheap to read once found. Nothing is
+injected at session start; a file is found in one of two ways, and the format serves both plus
+the reading tiers that follow:
 
 | Tier | How | Cost | Answers |
 |---|---|---|---|
+| Recall | `~/.claude/hooks/instinct-recall.py` matches a trigger phrase in tool output and injects `id` + `action` | 0 — pushed | the lesson, at the moment of the symptom |
 | Find | `grep -l "<literal error text>"` | ~9 tok | does anything exist? |
 | Skim | `head -14 <file>` | ~140 tok | what is the lesson? |
 | Read | full file | ~700 tok | why, mechanism, caveats |
@@ -43,8 +44,8 @@ in full is how a wrong `action:` gets minted.
 ---
 schema_version: 2                   # typed-evidence schema; lint_evidence.py treats files without it as unmigrated
 id: kebab-case-name                 # equals the filename without .md
-trigger: "literal strings a future searcher would type |
-          error text, exit codes, command names, API names, file names |
+trigger: "fatal: the literal error line, quoted first |
+          then command names, API names, file names |
           pipe-separated, and NEVER wrapped mid-phrase — see below"
 action: "one line, imperative — the lesson itself, readable without the body"
                                     # authoring/refreshing it = read the file to the END
@@ -80,6 +81,30 @@ arbitrarily with respect to where a lesson's qualifications live. One long evide
 enough. See [[corrections-are-appended-not-integrated]]. Authoring `action:` alone, on an
 otherwise-unchanged file, is still governed by [`CONVERTING.md`](CONVERTING.md)'s completion
 criterion.
+
+**`trigger` — quote the error line first, so the recall hook can reach it.**
+
+The hook indexes a phrase only when it is at least 16 characters **and contains an error word**
+(`error`, `fatal`, `failed`, `denied`, `not found`, `no such`, `cannot`, `exit code`, …; the full
+list is `ERROR_WORD` in the hook). A trigger with no such phrase is never recalled. The usual
+miss is a trigger that describes a situation ("when reviewing a multi-phase implementation")
+instead of quoting what the tool printed.
+
+- Quote the line **with its prefix**. `did not match any file(s) known to git` contains no
+  error word and is unreachable; `error: pathspec 'x' did not match` is reachable.
+- After the error phrase, add the situation, command and file names for the manual `grep`.
+- A lesson that never prints an error (a workflow habit, a user correction) has no reachable
+  trigger. That is legitimate, but such a file relies on a manual grep alone; prefer the
+  Gotchas section of the skill that owns the task.
+
+Check reachability; `2` means unreachable:
+
+```bash
+python3 "$SKILL_DIR/scripts/trigger_probe.py" <id>.md --no-replay
+```
+
+Without `--no-replay` the probe also replays the trigger against this session and recent
+transcripts; `/instinct-analyze` gate E uses that mode.
 
 **`trigger` — wrap only at a `|`, never mid-phrase.**
 
@@ -189,11 +214,21 @@ Numbered, imperative, adaptable — the action and the reason, leaving room to a
 Cross-link as [[instinct-id]].
 
 ## Evidence (n=<total>, latest 2)
-- **YYYY-MM-DD** — one or two sentences: what happened, what it proved.
-- **YYYY-MM-DD** — same.
+- **YYYY-MM-DD** `<outcome>` — one or two sentences: what happened, what it proved.
+- **YYYY-MM-DD** `<outcome>` — same.
 
 → full history: `<id>.evidence.md`
 ```
+
+**`<outcome>` is a closed vocabulary of five:** `first_observation` (the event that created the
+lesson) · `repeated_failure` (it bit again) · `successful_recall` (it was consulted and changed
+what happened) · `confirmation` (re-observed without being consulted) · `correction` (the entry
+changes the lesson — a caveat, a wrong mechanism, a superseded fix). Definitions:
+`instinct-distill/reference/GATES.md`; source of truth: `OUTCOMES` in
+`~/.claude/skills/instinct-distill/scripts/build_index.py`.
+Any other token blocks the instinct's promotion exactly as a missing one does (`instinct-distill`
+`GATES.md`, rule 5). The corpus holds invalid tokens — `confirmed`, `caught_before_shipping`,
+`scope_correction` — so copy the list above, never a neighbouring file.
 
 ## Length
 
@@ -253,6 +288,7 @@ Full history. The lesson lives in `<id>.md`; this file exists so the pattern
 - `id` matches the safe filename stem; required fields and the closed domain vocabulary validate.
 - `trigger` keeps every literal retrieval phrase on one physical line, and `action` reflects a
   full read rather than a skim.
+- `trigger_probe.py <id>.md --no-replay` exits 0, or the file states why no error line exists.
 - The body contains the Symptom, mechanism, action, and evidence required by this contract.
 - `evidence_count` reconciles with visible incidents and the sibling archive is authoritative
   when present.

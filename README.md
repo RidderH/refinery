@@ -17,6 +17,7 @@ The loop is **learn → distill → improve**, and every step is human-started.
 | `instinct-prune` | Retire: bucket the corpus, shortlist candidates, human-verify, archive transactionally |
 | `instinct-distill` | Promote recurring lessons into skills, rules, commands, agents, or hook proposals |
 | `hooks/surface-instincts.sh` | Optional session-start notice for hosts that support lifecycle hooks |
+| `hooks/instinct-recall.py` | Optional Claude Code hook: when tool output matches a lesson's trigger, surfaces that lesson's `action:` line |
 | `rules/instincts.md` | Optional agent instructions that explain when to consult the corpus |
 
 ## Honest expectations
@@ -149,6 +150,33 @@ Then register the session-start hook by adding this to the `hooks.SessionStart` 
 }
 ```
 
+Optionally register the recall hook too. Pull-only search rarely happens mid-failure, so this
+hook does it: after a Bash call, or any failed tool call, it matches the output against every
+lesson's `trigger:` and injects the `id` and `action:` of at most two matches, each once per
+session. Add these entries to `hooks.PostToolUse` and `hooks.PostToolUseFailure`:
+
+```json
+{
+  "PostToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/instinct-recall.py" }]
+    }
+  ],
+  "PostToolUseFailure": [
+    {
+      "matcher": ".*",
+      "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/instinct-recall.py" }]
+    }
+  ]
+}
+```
+
+It only indexes trigger phrases that read like an error message; `instinct-format` explains how
+to write one, and its `trigger_probe.py` replays a draft trigger through the hook's own matcher.
+It logs each fire to `~/.claude/instinct-recall.log`, which `instinct-distill` reads as
+recurrence evidence. [`CONTENT-SAFETY.md`](CONTENT-SAFETY.md) § 4 covers what it injects.
+
 ### Codex adapter
 
 Codex uses `~/.codex/AGENTS.md` for always-on instructions. Its `~/.codex/rules/`
@@ -194,7 +222,7 @@ surface. No copied integration is needed here: because both paths point into the
 
 ### Update an agent integration
 
-The versioned package manifest owns exactly the four skills, hook, and instruction file. Update
+The versioned package manifest owns exactly the four skills, hooks, and instruction file. Update
 reconciles those managed paths, removing files deleted upstream while leaving the corpus and all
 unrelated configuration untouched. Replace `<agent-config-dir>` as above:
 

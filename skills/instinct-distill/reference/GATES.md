@@ -165,6 +165,19 @@ document. Where the two disagree, this document wins.
 intended and needs no promotion. A cluster whose most recent typed entry is `successful_recall`
 is **declined**, with that reason recorded in the ledger.
 
+### A recall-hook fire is a recurrence, not a `successful_recall`
+
+`~/.claude/hooks/instinct-recall.py` fires **after** the tool call, on its error output, and logs
+each fire to `~/.claude/instinct-recall.log` (tab-separated: time, session, event, tool, id,
+matched phrase). A fire therefore proves the symptom happened again; the lesson arrived only to
+help clean up. Type the incident from the session it names: read that transcript, confirm the
+fire was the lesson's real trouble rather than a coincidental phrase, then record it as
+`repeated_failure` with the log's date as `observed_at`.
+
+A lesson that fires in many sessions is recalled after the mistake every time. That is the
+strongest sign it belongs earlier in the call: a rung 2 rule stub or a rung 5 hook proposal
+([`ROUTING.md`](ROUTING.md)).
+
 ## Cold start (#10)
 
 When nothing qualifies, emit the readiness readout — corpus size, how many files are typed, how

@@ -79,6 +79,21 @@ third of the corpus to satisfy a format rather than make anything easier to find
 
 Route first, then convert: file under ~35 lines → `MERGING.md`; file over it → the rules below.
 
+## Migrating evidence exposes the body debt — convert both in one pass
+
+`instinct-distill/scripts/migrate_evidence.py` and this conversion are independent, and running
+the evidence one alone leaves a file *more* red than before. `--check` short-circuits on the
+first missing required field, so while `schema_version` is absent it never reaches the body; the
+moment the evidence migration stamps `schema_version: 2`, three body sections it never mentioned
+start failing — `symptom`, `what's actually happening`, `do this`.
+
+That is a reveal, not a regression: the debt was always there. In a corpus that predates this
+contract it is the majority state, so expect it. Body shape predicts the verdict: a stamped file
+still carrying the old `## Action` body fails this check, and a stamped `## Symptom` file passes.
+
+So when you migrate a file's evidence, convert its body in the same pass — or knowingly leave a
+red `--check` behind and say so.
+
 ## What the first two batches got wrong
 
 Ten conversions, three rejected. Each failure maps to a rule above:

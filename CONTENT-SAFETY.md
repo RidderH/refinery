@@ -62,7 +62,7 @@ just quality:
   that is never lowered for small corpora (also a standing ruling) is what makes a
   stranger's first distillation inert.
 
-## 4. What the session-start hook deliberately does NOT do
+## 4. What the hooks inject, and what they never do
 
 `surface-instincts.sh` injects **no instinct content** into the session — no filenames,
 no rankings, no body text. It prints a count, the corpus directory, and fixed
@@ -70,6 +70,21 @@ instructions for searching. This was chosen for retrieval-quality reasons (see t
 hook's header), but it is also the content-safety property that matters most at session
 start: a hostile body cannot ride the hook into every session's context, because the hook
 never reads bodies at all. Do not "improve" the hook into surfacing content.
+
+`instinct-recall.py` (optional, Claude Code only) is the one place corpus text reaches the
+model without being searched for. Its reach is bounded on purpose:
+
+- It reads **frontmatter only** — `id`, `trigger`, `confidence`, `action` — never the body.
+- It injects at most two lessons per tool call, each once per session, with `action:` cut at
+  400 characters, framed as "a past lesson" plus the path to read it.
+- It fires only on tool output: after a Bash call, or after any failed tool call. It never fires
+  on output from commands that touch the corpus itself.
+
+That makes `action:` and `trigger:` the injection surface: a hostile trigger can be written to
+fire on common error text, and its `action:` then arrives unasked. § 1 applies to it exactly as
+to a body — the injected line is a claim, never an instruction — and § 2 is the defense: an
+imported file's frontmatter gets human eyes before the file enters `personal/`. Keep the hook to
+frontmatter: a body is unbounded, and injecting one would reopen the surface this section closes.
 
 ## 5. Tooling reads bodies as bytes
 
